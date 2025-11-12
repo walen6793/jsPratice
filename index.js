@@ -29,7 +29,7 @@ const initMySQLConnection = async () => {
 }
 
 
-app.listen(port, async (req,res) => {
+app.listen(port, async () => {
     await initMySQLConnection()
     console.log(`Server is running on port ${port}`)
 })
@@ -41,7 +41,7 @@ app.use(bodyParser.json()) // อ่านเป็นแบบ JSON
 app.get('/', async(req,res) => {
     
     try{
-        const result = await db.execute('SELECT * FROM app_user')
+        const result = await db.execute('SELECT * FROM user LIMIT 1')
         res.json({message: 'Welcome to my API',
             data : result[0]
         })
