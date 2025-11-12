@@ -41,7 +41,7 @@ app.use(bodyParser.json()) // อ่านเป็นแบบ JSON
 app.get('/', async(req,res) => {
     
     try{
-        const result = await db.execute('SELECT * FROM user LIMIT 1')
+        const result = await db.execute('SELECT * FROM user_inmate_relationship LIMIT 1')
         res.json({message: 'Welcome to my API',
             data : result[0]
         })
