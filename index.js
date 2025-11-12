@@ -2,37 +2,36 @@ const { json } = require('body-parser')
 const express = require('express')
 const app = express()
 const mysql = require('mysql2/promise')
-const dotenv =  require('dotenv')
+
 const bodyParser = require('body-parser')
 const { connect } = require('http2')
 const bcrypt = require('bcrypt')
 const { start } = require('repl')
 
+const dotenv = require('dotenv').config();
+
+const port = process.env.PORT
 
 const sql = 'SELECT * FROM app_user'
 let arr = []
 let counter = 0
 
-const port = 8000
-const host = 'localhost'
+
 
 const initMySQLConnection = async () => {
     try{
-    db = await mysql.createPool({
-    host: 'localhost',
-    user: 'my_app_user',
-    password: 'YourStrongP@ss123!',
-    database: 'visitation',
-    port: 3306
-    })}catch (error){
-        console.error('Error connecting to MySQL:', error)
+        const dbUrl = process.env.DATABASE_URL;
+        db = await mysql.createPool(dbUrl)
+        }catch (error){
+            console.error('Error connecting to MySQL:', error)
+            process.exit(1)
     }
 }
 
 
 app.listen(port, async (req,res) => {
     await initMySQLConnection()
-    console.log(`Server is running on port http://${host}:${port}`)
+    console.log(`Server is running on port ${port}`)
 })
 
 app.use(bodyParser.json()) // อ่านเป็นแบบ JSON
@@ -48,7 +47,7 @@ app.get('/', async(req,res) => {
         })
     }catch (error){
         console.error(error)
-        res.status(500).json({message: 'Internaal Server Error'})
+        res.status(500).json({message: 'Internal Server Error'})
     }
     
     
