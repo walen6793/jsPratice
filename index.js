@@ -71,7 +71,10 @@ app.post('/check-idcard', async(req,res) => {
             
             return res.status(409).json({
                 message : "ID card นี้มีบัญชีผู้ใช้แล้ว",
-                id_card : check_SQL[0].visitor_firstname,
+                id_card : check_SQL[0].id_card,
+                prefixe : check_SQL[0].prefixes_nameTh ,
+                firstname : check_SQL[0].visitor_firstname,
+                lastname : check_SQL[0].visitor_lastname
             })
         }
         const data = check_SQL[0]
