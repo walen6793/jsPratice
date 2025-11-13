@@ -56,7 +56,7 @@ app.get('/', async(req,res) => {
 app.post('/check-idcard', async(req,res) => {
     try{
         let newUser = req.body
-        const [check_SQL] = await db.execute('SELECT p.prefixes, r.visitor_prefixe, r.visitor_firstname, r.visitor_lastname, r.userId AS claimed_user_id,u.id_card AS existing_user_account_id FROM user_inmate_relationship AS r LEFT JOIN user AS u ON r.visitor_id_card = u.id_card LEFT JOIN prefixes AS p ON r.visitor_prefixe = p.id WHERE r.visitor_id_card = ?;' , [newUser.id_card])
+        const [check_SQL] = await db.execute('SELECT p.prefixes, r.visitor_prefixe, r.visitor_firstname, r.visitor_lastname, r.userId AS claimed_user_id,u.id_card AS existing_user_account_id FROM user_inmate_relationship AS r LEFT JOIN user AS u ON r.visitor_id_card = u.id_card LEFT JOIN prefixes AS p ON r.visitor_prefixe = p.id_prefixes WHERE r.visitor_id_card = ?;' , [newUser.id_card])
         if (newUser.id_card == undefined || newUser.id_card.length != 13){
             return res.status(400).json({
             message : "ID card ต้องมีความยาว 13 ตัวอักษร"
