@@ -1,7 +1,7 @@
 const mySecretKey = process.env.MY_SECRET_KEY
 
 function checkAPI_key(req,res,next){
-    const api_key = req.headers['x_api_key']
+    const api_key = req.headers['X-API-KEY']
     if (api_key && api_key === mySecretKey){
         next()
     }else {
@@ -10,3 +10,4 @@ function checkAPI_key(req,res,next){
     }
 }
 module.exports = checkAPI_key
+
