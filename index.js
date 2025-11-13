@@ -58,6 +58,11 @@ app.post('/check-idcard', async(req,res) => {
     try{
         let newUser = req.body
         const [check_SQL] = await db.execute('SELECT r.visitor_prefixe, r.visitor_firstname, r.visitor_lastname, r.userId AS claimed_user_id,u.id_card AS existing_user_account_id FROM user_inmate_relationship AS r LEFT JOIN user AS u ON r.visitor_id_card = u.id_card WHERE r.visitor_id_card = ?;' , [newUser.id_card])
+        if (newUser.id_card == undefined || newUser.id_card.length != 13){
+            return res.status(400).json({
+            message : "ID card ต้องมีความยาว 13 ตัวอักษร"
+            })
+        }
         if (check_SQL.length === 0){
             return res.status(403).json({
                 message : "ID card นี้ไม่ได้ลงทะเบียนเป็นญาติผู้ต้องขัง"
@@ -72,7 +77,7 @@ app.post('/check-idcard', async(req,res) => {
         return res.json({
             data : data
         })
-        
+
     }catch (error){
         console.error(error)
         res.status(500).json({message: 'Internal Server Error'})
