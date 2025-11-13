@@ -68,14 +68,17 @@ app.post('/check-idcard', async(req,res) => {
             })
         }
         if (check_SQL[0].existing_user_account_id != null){
+            
             return res.status(409).json({
-                message : "ID card นี้มีบัญชีผู้ใช้แล้ว"
+                message : "ID card นี้มีบัญชีผู้ใช้แล้ว",
+                id_card : check_SQL[0].visitor_firstname,
             })
         }
         const data = check_SQL[0]
         return res.json({
             message : "ID card นี้สามารถใช้ได้",
-            prefixe : data.prefixes,
+            id_card : data.id_card,
+            prefixe : data.prefixes_nameTh ,
             firstname : data.visitor_firstname,
             lastname : data.visitor_lastname
         })
