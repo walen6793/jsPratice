@@ -75,6 +75,7 @@ app.post('/check-idcard', async(req,res) => {
         }
         const data = check_SQL[0]
         return res.json({
+            message : "ID card นี้สามารถใช้ได้",
             data : data
         })
 
