@@ -3,6 +3,8 @@ const express = require('express')
 const app = express()
 const mysql = require('mysql2/promise')
 
+
+
 const bodyParser = require('body-parser')
 const { connect } = require('http2')
 const bcrypt = require('bcrypt')
@@ -56,7 +58,20 @@ app.post('/check-idcard', async(req,res) => {
     try{
         let newUser = req.body
         const [check_SQL] = await db.execute('SELECT r.visitor_prefixe, r.visitor_firstname, r.visitor_lastname, r.userId AS claimed_user_id,u.id_card AS existing_user_account_id FROM user_inmate_relationship AS r LEFT JOIN user AS u ON r.visitor_id_card = u.id_card WHERE r.visitor_id_card = ?;' , [newUser.id_card])
+        if (check_SQL.length === 0){
+            return res.status(400).json({
+                message : "ID card นี้ไม่ได้ลงทะเบียนเป็นญาติผู้ต้องขัง"
+            })
+        }
+        if (check_SQL[0].existing_user_account_id != null){
+            return res.status(400).json({
+                message : "ID card นี้มีบัญชีผู้ใช้แล้ว"
+            })
+        }
 
+        return res.json({
+            data : check_SQL
+        })
     }catch (error){
         console.error(error)
         res.status(500).json({message: 'Internal Server Error'})
