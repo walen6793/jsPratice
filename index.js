@@ -3,20 +3,17 @@ const express = require('express')
 const app = express()
 const mysql = require('mysql2/promise')
 
-
-
-const bodyParser = require('body-parser')
 const { connect } = require('http2')
 const bcrypt = require('bcrypt')
 const { start } = require('repl')
-
 const dotenv = require('dotenv').config();
+const cors = require('cors')
 
-const port = process.env.PORT
 
-const sql = 'SELECT * FROM app_user'
-let arr = []
-let counter = 0
+
+const checkAPI_key = require('./middleware/checkAPI_key')
+const { exitCode } = require('process')
+const port = process.env.PORT || 8000
 
 
 
@@ -29,6 +26,9 @@ const initMySQLConnection = async () => {
             process.exit(1)
     }
 }
+app.use(cors())
+app.use(express.json()) // อ่านเป็นแบบ JSON
+app.use(checkAPI_key)
 
 
 app.listen(port, async () => {
@@ -36,7 +36,6 @@ app.listen(port, async () => {
     console.log(`Server is running on port ${port}`)
 })
 
-app.use(bodyParser.json()) // อ่านเป็นแบบ JSON
 
 
 
