@@ -212,19 +212,19 @@ app.post('/createUser',async(req,res) => {
                 message : 'Password ต้องมีความยาวไม่เกิน 50 ตัวอักษร'
             })
         }
-        newUser.password = trimmedPassword
+        
         console.log("Password สามารถใช้ได้")
     
         console.log("ID card และ Phone สามารถใช้ได้")
 
         //hash password
         const saltRounds = 10
-        const hashedPassword = await bcrypt.hash(newUser.password, saltRounds)
-        newUser.password = hashedPassword
+        const hashedPassword = await bcrypt.hash(trimmedPassword, saltRounds)
+        
 
 
         const sql = 'INSERT INTO `visitation`.`user` (`id_card`,`prefixe_id`, `firstname`, `lastname`, `hashed_password`, `create_time`, `phone`, `is_active`, `last_active_at`) VALUES (?, ?, ?, ?, ?, NOW(), ?,1,NULL);'
-        const params = [newUser.id_card,newUser.prefixe,newUser.firstname,newUser.lastname,newUser.password,newUser.phone]
+        const params = [newUser.id_card,newUser.prefixe,newUser.firstname,newUser.lastname,hashedPassword,newUser.phone]
         const result = await connection.execute(sql, params)
         console.log("ผลลัพธ์การสร้างผู้ใช้ใหม่: ", result[0])
 
