@@ -263,7 +263,9 @@ app.post('/createUser',async(req,res) => {
                     console.error('Error during rollback:', err)
                 }
             }
-            res.status(500).json({message: 'Internal Server Error'})
+            if (!res.headersSent){
+                res.status(500).json({message: 'Internal Server Error'})
+            }
         
         }finally{
             if (connection){
