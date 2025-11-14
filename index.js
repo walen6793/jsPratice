@@ -98,6 +98,30 @@ app.post('/check-idcard', async(req,res) => {
 app.post('/create',async(req,res) => {
     let connection;
     try{
+
+        let newUser = req.body
+        if (newUser.id_card == undefined || newUser.id_card.length != 13){
+            return res.status(400).json({
+            message : "ID card ต้องมีความยาว 13 ตัวอักษร"
+            })
+        }
+        if (newUser.firstname == undefined || newUser.lastname == undefined || newUser.firstname.length == 0 || newUser.lastname.length == 0 || newUser.firstname.trim() == '' || newUser.lastname.trim() == ''){
+            
+            return res.status(400).json({
+                message : "กรุณาระบุ ชื่อ-นามสกุล"
+            })
+        }
+        if (newUser.phone == undefined || newUser.phone.length != 10) {
+            return res.status(400).json({
+                message : "เบอร์โทรศัพท์ต้องมีความยาว 10 ตัวอักษร"
+            })
+        }
+        if (newUser.phone.startsWith('0' ) == false){
+            
+            return res.status(400).json({
+                message : "เบอร์โทรศัพท์ต้องขึ้นต้นด้วยเลข 0"
+            })
+        }
         connection = await db.getConnection()
         console.log("ยืม "+connection.threadId)
 
@@ -107,17 +131,13 @@ app.post('/create',async(req,res) => {
         //statement หลังจากนี้ต้องสำเร็จทั้งหมดถึงจะ commit
         //ถ้าผิดพลาดตรงไหนให้ rollback
 
-        let newUser = req.body
+        
 
         //check id_card
         const [check_SQL] = await connection.execute('SELECT r.visitor_prefixe, r.visitor_firstname, r.visitor_lastname, r.userId AS claimed_user_id,u.id_card AS existing_user_account_id FROM user_inmate_relationship AS r LEFT JOIN user AS u ON r.visitor_id_card = u.id_card WHERE r.visitor_id_card = ? FOR UPDATE;' , [newUser.id_card])
         console.log("ผลลัพธ์ของการตรวจสอบ ID card: " , check_SQL);
 
-        if (newUser.id_card == undefined || newUser.id_card.length != 13){
-            return res.status(400).json({
-            message : "ID card ต้องมีความยาว 13 ตัวอักษร"
-            })
-        }
+        
         if (check_SQL.length === 0){
             await connection.rollback()
             return res.status(400).json({
@@ -138,12 +158,6 @@ app.post('/create',async(req,res) => {
                 message : "คำนำหน้าชื่อไม่ตรงกับที่ลงทะเบียนเป็นญาติผู้ต้องขัง"
             })
         }
-        if (newUser.firstname == undefined || newUser.lastname == undefined || newUser.firstname.length == 0 || newUser.lastname.length == 0 || newUser.firstname.trim() == '' || newUser.lastname.trim() == ''){
-            await connection.rollback()
-            return res.status(400).json({
-                message : "กรุณาระบุ ชื่อ-นามสกุล"
-            })
-        }
         
         if(check_SQL[0].visitor_firstname != newUser.firstname){
             await connection.rollback()
@@ -160,21 +174,18 @@ app.post('/create',async(req,res) => {
 
     
         //checkPhone
-        if (newUser.phone == undefined || newUser.phone.length != 10) {
+        const [checkPhone_SQL] = await connection.execute('SELECT phone FROM user WHERE phone = ? FOR UPDATE;', [newUser.phone])
+        
+        if (checkPhone_SQL.length > 0){
             await connection.rollback()
             return res.status(400).json({
-                message : "Phone ต้องมีความยาว 10 ตัวอักษร"
+                message : "เบอร์โทรศัพท์นี้มีผู้ใช้แล้ว"
             })
         }
-        if (newUser.phone.startsWith('0' ) == false){
-            await connection.rollback()
-            return res.status(400).json({
-                message : "Phone ต้องขึ้นต้นด้วยเลข 0"
-            })
-        }
+        
 
         //check password
-        let password = newUser.password.trim()
+        let password = newUser.password
 
         if (password == undefined){
             await connection.rollback()
@@ -182,29 +193,27 @@ app.post('/create',async(req,res) => {
                 message : 'Password ห้ามเป็นค่าว่าง หรือ มีเว้นวรรค'
             })
         }
-        if (password.trim() == ''){
+        const trimmedPassword = password.trim()
+        if (trimmedPassword == ''){
             await connection.rollback()
             return res.status(400).json({
                 message : 'Password ห้ามเป็นค่าว่าง หรือ มีเว้นวรรค'
             })
         }
 
-        if (password.length < 8){
+        if (trimmedPassword.length < 8){
             await connection.rollback()
             return res.status(400).json({
                 message : 'Password นี้ต้องมีความยาวอย่างน้อย 8 ตัวอักษร'
             })
-        } if (password.length > 50){
+        } if (trimmedPassword.length > 50){
             await connection.rollback()
             return res.status(400).json({
                 message : 'Password ต้องมีความยาวไม่เกิน 50 ตัวอักษร'
             })
         }
-        newUser.password = password
+        newUser.password = trimmedPassword
         console.log("Password สามารถใช้ได้")
-
-        
-        
     
         console.log("ID card และ Phone สามารถใช้ได้")
 
@@ -221,10 +230,27 @@ app.post('/create',async(req,res) => {
 
         const update_relationship_sql = 'UPDATE user_inmate_relationship SET userId = ? WHERE visitor_id_card = ?'
         const update_relationship_params = [result[0].insertId, newUser.id_card]
-        await connection.execute(update_relationship_sql, update_relationship_params)
+        const update_relationship_result  = await connection.execute(update_relationship_sql, update_relationship_params)
         
         console.log("อัปเดตความสัมพันธ์เรียบร้อย")
         await connection.commit()
+
+
+        const data = result[0]
+        
+        return res.status(201).json({
+            message : 'User created successfully',
+            data : {
+                id : data.insertId,
+                id_card : newUser.id_card,
+                prefixe : newUser.prefixe,
+                firstname : newUser.firstname,
+                lastname : newUser.lastname,
+                phone : newUser.phone
+            }
+            
+
+        })
         
     }catch (error){
             console.error('Error during transaction:', error)
