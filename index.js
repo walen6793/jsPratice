@@ -95,7 +95,7 @@ app.post('/check-idcard', async(req,res) => {
 
 
 
-app.post('/create',async(req,res) => {
+app.post('/createUser',async(req,res) => {
     let connection;
     try{
 
