@@ -56,12 +56,19 @@ app.get('/', async(req,res) => {
 app.post('/check-idcard', async(req,res) => {
     try{
         let newUser = req.body
-        const [check_SQL] = await db.execute('SELECT p.prefixes_nameTh, r.visitor_prefixe, r.visitor_firstname, r.visitor_lastname, r.userId AS claimed_user_id,u.id_card AS existing_user_account_id FROM user_inmate_relationship AS r LEFT JOIN user AS u ON r.visitor_id_card = u.id_card LEFT JOIN prefixes AS p ON r.visitor_prefixe = p.id_prefixes WHERE r.visitor_id_card = ?;' , [newUser.id_card])
-        if (newUser.id_card == undefined || newUser.id_card.length != 13){
+        if (newUser.id_card == null || newUser.id_card == undefined || newUser.id_card.length == 0 || newUser.id_card.trim() == ''|| typeof newUser.id_card != 'string' ){
+            return res.status(400).json({
+            message : "กรุณาระบุ ID card"
+            })
+        }
+        if (newUser.id_card.length != 13){
             return res.status(400).json({
             message : "ID card ต้องมีความยาว 13 ตัวอักษร"
             })
         }
+        
+        const [check_SQL] = await db.execute('SELECT p.prefixes_nameTh, r.visitor_prefixe, r.visitor_firstname, r.visitor_lastname, r.userId AS claimed_user_id,u.id_card AS existing_user_account_id FROM user_inmate_relationship AS r LEFT JOIN user AS u ON r.visitor_id_card = u.id_card LEFT JOIN prefixes AS p ON r.visitor_prefixe = p.id_prefixes WHERE r.visitor_id_card = ?;' , [newUser.id_card])
+        
         if (check_SQL.length === 0){
             return res.status(403).json({
                 message : "ID card นี้ไม่ได้ลงทะเบียนเป็นญาติผู้ต้องขัง"
@@ -71,7 +78,7 @@ app.post('/check-idcard', async(req,res) => {
             
             return res.status(409).json({
                 message : "ID card นี้มีบัญชีผู้ใช้แล้ว",
-                id_card : check_SQL[0].id_card,
+                id_card : newUser.id_card,
                 prefixe : check_SQL[0].prefixes_nameTh ,
                 firstname : check_SQL[0].visitor_firstname,
                 lastname : check_SQL[0].visitor_lastname
@@ -95,10 +102,9 @@ app.post('/check-idcard', async(req,res) => {
 
 
 
-app.post('/createUser',async(req,res) => {
+app.post('/register',async(req,res) => {
     let connection;
     try{
-
         let newUser = req.body
         if (newUser.id_card == undefined || newUser.id_card.length != 13){
             return res.status(400).json({
@@ -122,6 +128,30 @@ app.post('/createUser',async(req,res) => {
                 message : "เบอร์โทรศัพท์ต้องขึ้นต้นด้วยเลข 0"
             })
         }
+
+        
+        if (typeof newUser.phone != 'string'){
+            return res.status(400).json({
+                message : "เบอร์โทรศัพท์ต้องเป็น string"
+            })
+        }
+        if (typeof newUser.firstname != 'string'){
+            return res.status(400).json({
+                message : "ชื่อ ต้องเป็นตัวอักษร"
+            })
+        }
+        if (typeof newUser.lastname != 'string'){
+            return res.status(400).json({
+                message : "นามสกุล ต้องเป็นตัวอักษร"
+            })
+        }
+        if (newUser.prefixe == undefined || typeof newUser.prefixe != 'number'){
+            return res.status(400).json({
+                message : "คำนำหน้าชื่อ ไม่ถูกต้อง"
+            })
+        }
+        
+
         connection = await db.getConnection()
         console.log("ยืม "+connection.threadId)
 
