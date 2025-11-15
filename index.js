@@ -128,6 +128,7 @@ app.post('/register',async(req,res) => {
                 message : "เบอร์โทรศัพท์ต้องขึ้นต้นด้วยเลข 0"
             })
         }
+        
 
         
         if (typeof newUser.phone != 'string'){
@@ -224,6 +225,14 @@ app.post('/register',async(req,res) => {
             })
         }
         const trimmedPassword = password.trim()
+        const hasnonAscii = /[^\x00-\x7F]/.test(trimmedPassword)
+        if (hasnonAscii){
+            await connection.rollback()
+            return res.status(400).json({
+                message : 'Password ต้องเป็นตัวอักษรภาษาอังกฤษหรือตัวเลขเท่านั้น'
+            })
+        }
+
         if (trimmedPassword == ''){
             await connection.rollback()
             return res.status(400).json({
@@ -261,7 +270,12 @@ app.post('/register',async(req,res) => {
         const update_relationship_sql = 'UPDATE user_inmate_relationship SET userId = ? WHERE visitor_id_card = ?'
         const update_relationship_params = [result[0].insertId, newUser.id_card]
         const update_relationship_result  = await connection.execute(update_relationship_sql, update_relationship_params)
-        
+        if (update_relationship_result[0].affectedRows === 0){
+            await connection.rollback()
+            return res.status(500).json({
+                message : "เกิดข้อผิดพลาดในการอัปเดตความสัมพันธ์"
+            })
+        }
         console.log("อัปเดตความสัมพันธ์เรียบร้อย")
         await connection.commit()
 
