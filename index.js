@@ -145,7 +145,7 @@ app.post('/register',async(req,res) => {
                 message : "นามสกุล ต้องเป็นตัวอักษร"
             })
         }
-        if (newUser.prefixe == undefined || typeof newUser.prefixe != 'number'){
+        if (newUser.prefixe == undefined || typeof newUser.prefixe != 'string'){
             return res.status(400).json({
                 message : "คำนำหน้าชื่อ ไม่ถูกต้อง"
             })
