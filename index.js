@@ -15,6 +15,7 @@ const checkAPI_key = require('./middleware/checkAPI_key')
 const checkAuth = require('./middleware/checkAuth')
 const ValidationError = require('./validateErr/AppError')
 const { exitCode } = require('process')
+const { count } = require('console')
 const port = process.env.PORT || 8000
 
 
@@ -375,6 +376,96 @@ app.get('/main' , checkAPI_key,checkAuth, async (req,res) => {
         return res.status(500).json({message: 'Internal Server Error'})
     }
 
+})
+
+app.get('/inmate_info', checkAPI_key,checkAuth, async (req,res) => {
+
+    try{
+        const myUserId = req.user.userId
+        const [inmate] = await db.execute('SELECT u.userId, u.inmateId , p.prefixes_nameTh , i.firstname ,i.lastname  FROM user_inmate_relationship AS u LEFT JOIN inmate AS i ON u.inmateId = i.id LEFT JOIN prefixes AS p ON i.prefixeID = p.id_prefixes WHERE u.userId = ?',[myUserId])
+        
+        if (inmate.length === 0){
+            res.status(200).json({
+                message : 'ไม่มีข้อมูลผู้ต้องขังที่เกี่ยวข้อง',
+                data : []
+            })
+            return
+        }
+        console.log("ข้อมูลผู้ต้องขังที่เกี่ยวข้อง: ", inmate)
+        
+        const inmateList = inmate.map(item => ({
+            id : item.inmateId,
+            fullname : (item.prefixes_nameTh || '') + ' ' + item.firstname + ' ' + item.lastname
+        }))
+
+        res.status(200).json({
+            message : 'ข้อมูลผู้ต้องขังที่เกี่ยวข้อง',
+            count : inmateList.length,
+            data : inmateList
+        })
+
+    }catch (error){
+        console.log(error)
+        res.status(500).json({message: 'Internal Server Error'})
+    }
+})
+
+app.get('/inmate_info/:id', checkAPI_key,checkAuth, async (req,res) => {
+    try{
+        const inmateId = req.params.id
+        const myUserId = req.user.userId
+        const sql = `
+                        SELECT n.inmate_id ,p.prefixes_nameTh, i.firstname ,i.lastname ,DATE_FORMAT(i.birthdate, '%d/%m/%Y') AS birthdate, i.blood_type,i.inmate_photo_url ,n.case_type ,DATE_FORMAT(n.admission_date, '%d/%m/%Y') AS admission_date , DATE_FORMAT(n.release_date, '%d/%m/%Y') AS release_date ,n.status ,t.inmate_type ,l.location_name ,r.prison_name, TIMESTAMPDIFF( YEAR, i.birthdate, CURDATE() ) AS age
+                        FROM user_inmate_relationship AS u 
+                        LEFT JOIN inmate AS i ON u.inmateId = i.id 
+                        LEFT JOIN prefixes as p ON i.prefixeID =  p.id_prefixes 
+                        LEFT JOIN incarcerations AS n ON n.inmate_rowID = i.id 
+                        LEFT JOIN inmate_type AS t ON i.inmate_type = t.id
+                        LEFT JOIN inmate_location AS l ON n.current_location_id = l.id 
+                        LEFT JOIN prisons AS r ON l.prison_id = r.id
+                        WHERE u.userId = ? AND u.inmateId = ?
+                    `
+
+        const [rows] = await db.execute(sql,[myUserId, inmateId])
+        console.log("ผลลัพธ์การดึงข้อมูลผู้ต้องขัง: ", rows)
+        if (rows.length === 0){
+            return res.status(404).json({message: 'ไม่พบข้อมูลผู้ต้องขังที่เกี่ยวข้อง'})
+        }
+        
+        const data = rows[0]
+        const statusMap = {
+            'ACTIVE' : 'อยู่ระหว่างการรับโทษ',
+            'PAROLE' : 'ได้รับการปล่อยตัวชั่วคราว',
+            'RELEASED' : 'ได้รับการปล่อยตัวแล้ว',
+            'TRANSFERRED' : 'ถูกย้ายเรือนจำ',
+            'ESCAPED' : 'หลบหนี'
+        }
+        const status_th = statusMap[data.status] || 'ไม่ทราบสถานะ'
+        res.status(200).json({
+            message : 'ข้อมูลผู้ต้องขัง',
+            data : {
+                inmate_photo_url : data.inmate_photo_url,
+                inmate_id : data.inmate_id,
+                fullname : (data.prefixes_nameTh || '') + ' ' + data.firstname + ' ' + data.lastname,
+                age : data.age,
+                birthdate : data.birthdate,
+                
+                inmate_type : data.inmate_type,
+                location_name : data.location_name + ' / ' + data.prison_name,
+                status : status_th,
+                
+                admission_date : data.admission_date,
+                release_date : data.release_date,
+                
+                
+                
+                
+            }
+        })
+    }catch (error){
+        console.log(error)
+        res.status(500).json({message: 'Internal Server Error'})
+    }
 })
 
 
