@@ -17,14 +17,6 @@ const mySecretKey = process.env.MY_SECRET_KEY; // (เช็คชื่อต�
 function checkAPI_key(req, res, next) {
     const api_key = req.headers['x-api-key'];
 
-    // 🔴 DEBUG LOG: เปิดดูความจริงใน Vercel Logs
-    console.log("========================================");
-    console.log("1. Server Secret (ความยาว):", mySecretKey ? mySecretKey.length : 'undefined');
-    console.log("2. Server Secret (ค่าจริง):", JSON.stringify(mySecretKey)); // ใส่ JSON.stringify เพื่อดูช่องว่างที่ซ่อนอยู่
-    console.log("----------------------------------------");
-    console.log("3. Client Sent (ความยาว):", api_key ? api_key.length : 'undefined');
-    console.log("4. Client Sent (ค่าจริง):", JSON.stringify(api_key));
-    console.log("========================================");
 
     if (api_key && api_key === mySecretKey) {
         next();

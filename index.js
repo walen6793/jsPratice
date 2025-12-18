@@ -468,6 +468,186 @@ app.get('/inmate_info/:id', checkAPI_key,checkAuth, async (req,res) => {
     }
 })
 
+app.get('/slot/monthly', checkAPI_key,checkAuth, async (req,res) => {
+    try{
+        const myUserId = req.user.userId
+        const {year,month} = req.query
+        if (!year || !month){
+            throw new ValidationError("กรุณาระบุ year และ month")
+        }
+
+
+        const [rows] = await db.execute(`
+            SELECT visit_date , SUM(capacity) AS total_capacity, SUM(current_booking) AS total_booked, MAX(status) AS status
+            FROM visit_slot
+            WHERE YEAR(visit_date) = ? AND MONTH(visit_date) = ?
+            GROUP BY visit_date
+            ORDER BY visit_date ASC
+        `, [year, month])
+        console.log("ผลลัพธ์การดึงข้อมูลช่องเวลาการเยี่ยมชมรายเดือน: ", rows)
+        const calendarData = {}
+
+        rows.forEach(row => {
+            // แปลงวันที่เป็น String '2024-11-20'
+            const dateKey = row.visit_date.toISOString().split('T')[0];
+            
+            let status = 'AVAILABLE';
+            if (row.total_booked >= row.total_capacity) {
+                status = 'FULL';
+            } else if (row.day_status === 'CLOSED') {
+                status = 'CLOSED';
+            }
+
+            calendarData[dateKey] = {
+                status: status,
+                seats_left: row.total_capacity - row.total_booked
+            };
+        });
+
+        res.status(200).json({
+            message : 'ข้อมูลช่องเวลาการเยี่ยมชมรายเดือน',
+            data : calendarData
+        })
+    }catch (error){
+        console.log(error)
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        res.status(500).json({message: 'Internal Server Error'})
+    }
+})
+app.get('/slots', checkAPI_key,checkAuth, async (req,res) => {
+    try{
+        const {date} = req.query
+        if (!date){
+            throw new ValidationError("กรุณาระบุ date")
+        }
+        const [rows] = await db.execute(`
+            SELECT id,visit_date, starts_at,ends_at,capacity, current_booking, status
+            FROM visit_slot
+            WHERE visit_date = ?
+            ORDER BY starts_at ASC`, [date])
+            console.log("ผลลัพธ์การดึงข้อมูลช่องเวลาการเยี่ยมชมรายวัน: ", rows)
+            if (rows.length === 0){
+                return res.status(404).json({message: 'ไม่พบช่องเวลาการเยี่ยมชมในวันที่ระบุ'})
+            }
+            const slotData = rows.map(row => {
+                let status = 'AVAILABLE';
+                const isFull = row.current_booking >= row.capacity;
+                const isClosed = row.status ==='CLOSED';
+                
+                if (isFull) {
+                    status = 'FULL';
+                } else if (isClosed) {
+                    status = 'CLOSED';
+                }
+                
+                return {
+                id: row.id,
+                visit_date : row.visit_date.toISOString().split('T')[0],
+                time_label : `${row.starts_at}` + ' - ' + `${row.ends_at}`,
+                status : status
+
+                };
+            })
+            res.status(200).json({
+                message : 'ข้อมูลช่องเวลาการเยี่ยมชมรายวัน',
+                data : slotData
+            })
+            
+
+
+
+    }catch(error){
+        console.log(error)
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        res.status(500).json({message: 'Internal Server Error'})
+    }
+})
+
+app.post('/admin/generate-slots',checkAPI_key,checkAuth,async(req,res) => {
+    let connection;
+    try{
+        const {year, month} = req.body
+        if (!year || !month ){
+            throw new ValidationError("กรุณาระบุ year และ month")
+        }
+        const capasity_per_slot = 5
+        const timeSlots = [
+            {starts_at : '09:15:00',end: '09:30:00'},
+            {starts_at : '10:15:00',end: '10:30:00'},
+            {starts_at : '11:15:00',end: '11:30:00'},
+            {starts_at : '12:15:00',end: '12:30:00'},
+            {starts_at : '13:15:00',end: '13:30:00'},
+            {starts_at : '14:15:00',end: '14:30:00'}
+
+        
+        
+        
+        ]
+        //คำนวณจำนวนวันในเดือน
+        const daysInMonth = new Date(year,month,0).getDate()
+        const bulkValues = []
+        
+        const status = 'OPEN'
+
+        //ลูป
+        for (let day = 1; day <= daysInMonth; day++){
+            const currentDate = new Date(year, month - 1 ,day)
+            console.log("กำลังประมวลผลวันที่: ", currentDate)
+            const dayOfWeek = currentDate.getDay()
+            if (dayOfWeek === 0 || dayOfWeek === 6){
+                continue
+            }
+            const dateString = currentDate.toISOString().split('T')[0];
+            timeSlots.forEach(slot => {
+                bulkValues.push([dateString, slot.starts_at, slot.end,capasity_per_slot,status])
+
+            })
+        }
+        if (bulkValues.length > 0 ){
+            connection = await db.getConnection()
+            await connection.beginTransaction()
+
+            await connection.query(`
+                INSERT INTO visit_slot (visit_date,starts_at,ends_at,capacity,status) VALUES ?
+                
+                `,[bulkValues])
+
+            await connection.commit()
+            res.status(201).json({
+                message : 'สร้างช่องเวลาการเยี่ยมชมสำเร็จ',
+                total_slots_created : 'สร้างรอบของสำเร็จจำนวน' + bulkValues.length + 'รอบ',
+
+            })
+        }else{
+            throw new ValidationError("ไม่มีวันใดในเดือนนี้ที่สามารถสร้างช่องเวลาได้")
+        }
+            
+        
+    }catch (error){
+        console.log(error)
+        if (connection){
+            await connection.rollback()
+        }
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        res.status(500).json({message: 'Internal Server Error'})
+    }finally{
+        if (connection){
+            try{
+                connection.release()
+                console.log("คืน "+connection.threadId)
+            }catch (err){
+                console.error('Error during release:', err)
+            }
+        }
+    }
+})
+
 
 
 app.get('/users',(req,res) => {
