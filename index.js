@@ -475,8 +475,6 @@ app.get('/slot/monthly', checkAPI_key,checkAuth, async (req,res) => {
         if (!year || !month){
             throw new ValidationError("กรุณาระบุ year และ month")
         }
-
-
         const [rows] = await db.execute(`
             SELECT visit_date , SUM(capacity) AS total_capacity, SUM(current_booking) AS total_booked, MAX(status) AS status
             FROM visit_slot
@@ -517,47 +515,73 @@ app.get('/slot/monthly', checkAPI_key,checkAuth, async (req,res) => {
     }
 })
 app.get('/slots', checkAPI_key,checkAuth, async (req,res) => {
+    // ควรแยกหญิงชาย กับ จำนวนที่ญาติจองได้แต่ละเดือน 
+    // ต้องจองล่วงหน้าได้สูงสุดกี่วัน
+    // จองวันเดียวกันไม่ได้
+    // Zoom ต้องสร้าง link ใหม่
+    // zoom สามารถจองเวลาเดียวกันได้ไหม
+
+
     try{
-        const {date} = req.query
-        if (!date){
-            throw new ValidationError("กรุณาระบุ date")
+        const {date, type} = req.query
+        if (!date || !type){
+            throw new ValidationError("กรุณาระบุ date และ type")
         }
-        const [rows] = await db.execute(`
-            SELECT id,visit_date, starts_at,ends_at,capacity, current_booking, status
-            FROM visit_slot
-            WHERE visit_date = ?
-            ORDER BY starts_at ASC`, [date])
-            console.log("ผลลัพธ์การดึงข้อมูลช่องเวลาการเยี่ยมชมรายวัน: ", rows)
+        const [rows] = await db.execute(`SELECT v.id,v.visit_date, 
+            TIME_FORMAT(v.starts_at, '%H:%i') AS starts_at, 
+            TIME_FORMAT(v.ends_at, '%H:%i') AS ends_at, 
+            v.capacity AS capacity, 
+            v.current_booking AS current_booking, 
+            v.status AS status,
+            d.device_name AS device_name ,d.platforms AS platforms 
+            FROM visit_slot AS v 
+            JOIN devices AS d ON v.device_id = d.id  
+            WHERE v.visit_date = ? AND d.platforms = ? 
+
+            ORDER BY d.device_name,v.starts_at ASC;
+            `, [date,type])
+            //console.log("ผลลัพธ์การดึงข้อมูลช่องเวลาการเยี่ยมชมรายวัน: ", rows)
             if (rows.length === 0){
                 return res.status(404).json({message: 'ไม่พบช่องเวลาการเยี่ยมชมในวันที่ระบุ'})
             }
-            const slotData = rows.map(row => {
-                let status = 'AVAILABLE';
-                const isFull = row.current_booking >= row.capacity;
-                const isClosed = row.status ==='CLOSED';
+            const deviceName_Set = {}
+            rows.forEach(row => {
+                const time_label = `${row.starts_at} - ${row.ends_at}`;
+                const deviceName = row.device_name;
                 
-                if (isFull) {
-                    status = 'FULL';
-                } else if (isClosed) {
+                const capacity = Number(row.capacity);
+                const current_booking = Number(row.current_booking);
+
+                let status = 'AVAILABLE';
+                if (row.status === 'CLOSED'){
                     status = 'CLOSED';
+                }else if(row.status === 'FULL' || current_booking >= capacity){
+                    status = 'FULL';
                 }
                 
-                return {
-                id: row.id,
-                visit_date : row.visit_date.toISOString().split('T')[0],
-                time_label : `${row.starts_at}` + ' - ' + `${row.ends_at}`,
-                status : status
+                const slotData = {
+                    slot_id : row.id,
+                    time: time_label,
+                    status : status,
+                    
+                }
 
-                };
-            })
-            res.status(200).json({
-                message : 'ข้อมูลช่องเวลาการเยี่ยมชมรายวัน',
-                data : slotData
+                if (!deviceName_Set[deviceName]){
+                    deviceName_Set[deviceName] = {
+                        deviceName: deviceName,
+                        slots: []
+                    }
+                }
+                deviceName_Set[deviceName].slots.push(slotData);
+                //ทำถึง status แล้ว
             })
             
-
-
-
+            console.log("ข้อมูลช่องเวลาการเยี่ยมชมที่จัดกลุ่มตามอุปกรณ์: ", Object.values(deviceName_Set))
+            res.status(200).json({
+                message : 'ข้อมูลช่องเวลาการเยี่ยมชมรายวัน',
+                visit_date : date,
+                data : Object.values(deviceName_Set)
+            })
     }catch(error){
         console.log(error)
         if (error instanceof ValidationError){
@@ -567,6 +591,152 @@ app.get('/slots', checkAPI_key,checkAuth, async (req,res) => {
     }
 })
 
+app.post('/booking-preview', checkAPI_key,checkAuth, async (req,res) => {
+    try{
+        const {slot_id, visitor_id, inmate_id} = req.body
+        if (!slot_id || !visitor_id || !inmate_id){
+            throw new ValidationError("กรุณาระบุ slot_id, visitor_id และ inmate_id")
+        }
+        const [slotRows] = await db.execute(`
+            SELECT u.id_card AS visitor_id_card, u.firstname AS visitor_firstname, u.lastname AS visitor_lastname
+
+            , i.id_card AS inmate_id_card, i.firstname AS inmate_firstname, i.lastname AS inmate_lastname
+
+            ,v.id,v.visit_date AS visit_date, 
+            TIME_FORMAT(v.starts_at, '%H:%i') AS starts_at, 
+            TIME_FORMAT(v.ends_at, '%H:%i') AS ends_at,
+
+            d.device_name AS device_name 
+
+            FROM visit_slot AS v
+            JOIN user AS u ON u.userId = ?
+            JOIN inmate AS i ON i.id = ?
+            JOIN devices AS d ON v.device_id = d.id
+            WHERE v.id = ? ;
+        `, [visitor_id, inmate_id, slot_id])
+
+        if (slotRows.length === 0){
+            throw new ValidationError("ไม่พบข้อมูลช่องเวลาการเยี่ยมชมที่ระบุ")
+        }
+        console.log("ผลลัพธ์การดึงข้อมูลช่องเวลาการเยี่ยมชมสำหรับพรีวิวการจอง: ", slotRows[0])
+        const data = slotRows[0]
+
+        const thaiDate = new Date(data.visit_date).toLocaleDateString('th-TH', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+        });
+        
+        res.status(200).json({
+            message : 'ข้อมูลพรีวิวการจองช่องเวลาการเยี่ยมชม',
+            data : {
+                visitor : {
+                    id_card : data.visitor_id_card,
+                    fullname : data.visitor_firstname + ' ' + data.visitor_lastname
+                },
+                inmate : {
+                    id_card : data.inmate_id_card,
+                    fullname : data.inmate_firstname + ' ' + data.inmate_lastname
+                },
+                slot : {
+                    slot_id : data.id,
+                    visit_date : thaiDate ,
+                    time : data.starts_at + ' - ' + data.ends_at,
+                    device_name : data.device_name
+                }
+            }
+        })
+
+        
+    }catch (error){
+        console.log(error)
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        res.status(500).json({message: 'Internal Server Error'})
+    }
+        })
+
+app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
+    const connection = await db.getConnection()
+    try{
+        const userId = req.user.userId
+        const {slot_id, visitor_id, inmate_id} = req.body
+        if (!slot_id || !visitor_id || !inmate_id){
+            throw new ValidationError("กรุณาระบุ slot_id, visitor_id และ inmate_id")
+        }
+        await connection.beginTransaction()
+
+        //ตรวจสอบ slot_id ว่ายังว่างไหม
+        const [slotRows] = await connection.execute(`
+            SELECT s.id, s.visit_date,s.current_booking, s.capacity,s.status,b.relative_user_id
+            FROM visit_slot AS s JOIN visit_booking AS b ON s.id = b.slot_id
+            WHERE s.id = ? FOR UPDATE;
+        `, [slot_id]);
+        
+
+        
+            
+        if (slotRows.length === 0){
+            throw new ValidationError("ไม่พบข้อมูลช่องเวลาการเยี่ยมชมที่ระบุ")
+        }
+        const slotData = slotRows[0]
+        if (slotData.status === 'CLOSED'){
+            throw new ValidationError("ช่องเวลาการเยี่ยมชมนี้ปิดรับการจองแล้ว")
+        }
+        if (slotData.relative_user_id == userId){
+            throw new ValidationError("คุณได้ทำการจองช่องเวลาการเยี่ยมชมนี้ไปแล้ว")
+        }
+        console.log("ข้อมูลช่องเวลาการเยี่ยมชมที่ตรวจสอบการจอง: ", slotData)
+        if (slotData.current_booking >= slotData.capacity){
+            throw new ValidationError("ช่องเวลาการเยี่ยมชมนี้เต็มแล้ว")
+        }
+        
+    //business logic ตรวจสอบการจองซ้ำ ยังไม่ได้ทำ
+
+    const [insertResult] = await connection.execute(`
+        INSERT INTO visit_booking (slot_id,inmate_id,relative_user_id)
+        VALUES (?,?,?)`, [slot_id, inmate_id, userId])
+
+    if (insertResult.affectedRows === 0){
+        throw new ValidationError("ไม่สามารถสร้างการจองได้")}
+    const [updateResult] = await connection.execute(`
+        UPDATE visit_slot SET current_booking = current_booking + 1 WHERE id = ?
+        `,[slot_id]
+        )
+    await connection.commit()
+    res.status(201).json({
+        message : 'การจองช่องเวลาการเยี่ยมชมสำเร็จ',
+        booking_id : insertResult.insertId
+    })
+
+    }catch (error){
+        console.log(error)
+        await connection.rollback()
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        res.status(500).json({message: 'Internal Server Error'})
+    }finally{
+        try{
+            connection.release()
+        }catch (err){
+            console.error('Error during release:', err)
+        }
+    }
+})
+
+// app.get('/check-booking', checkAPI_key,checkAuth, async (req,res) => {
+
+//     try{
+//         const userId = req.user.userId
+//         const [rows] = await db.execute(`
+//             SELECT 
+//             `)
+//     }
+// }
+
+
 app.post('/admin/generate-slots',checkAPI_key,checkAuth,async(req,res) => {
     let connection;
     try{
@@ -574,14 +744,14 @@ app.post('/admin/generate-slots',checkAPI_key,checkAuth,async(req,res) => {
         if (!year || !month ){
             throw new ValidationError("กรุณาระบุ year และ month")
         }
-        const capasity_per_slot = 5
+        const capasity_per_slot = 1
         const timeSlots = [
-            {starts_at : '09:15:00',end: '09:30:00'},
-            {starts_at : '10:15:00',end: '10:30:00'},
-            {starts_at : '11:15:00',end: '11:30:00'},
-            {starts_at : '12:15:00',end: '12:30:00'},
-            {starts_at : '13:15:00',end: '13:30:00'},
-            {starts_at : '14:15:00',end: '14:30:00'}
+            {starts_at : '09:15:00',end: '09:30:00',device_id : 6},
+            {starts_at : '10:15:00',end: '10:30:00',device_id : 6},
+            {starts_at : '11:15:00',end: '11:30:00',device_id : 6},
+            {starts_at : '12:15:00',end: '12:30:00',device_id : 6},
+            {starts_at : '13:15:00',end: '13:30:00',device_id : 6},
+            {starts_at : '14:15:00',end: '14:30:00',device_id : 6}
 
         
         
@@ -590,7 +760,7 @@ app.post('/admin/generate-slots',checkAPI_key,checkAuth,async(req,res) => {
         //คำนวณจำนวนวันในเดือน
         const daysInMonth = new Date(year,month,0).getDate()
         const bulkValues = []
-        
+        const current_booking = 0;
         const status = 'OPEN'
 
         //ลูป
@@ -603,7 +773,7 @@ app.post('/admin/generate-slots',checkAPI_key,checkAuth,async(req,res) => {
             }
             const dateString = currentDate.toISOString().split('T')[0];
             timeSlots.forEach(slot => {
-                bulkValues.push([dateString, slot.starts_at, slot.end,capasity_per_slot,status])
+                bulkValues.push([dateString, slot.starts_at, slot.end,capasity_per_slot,current_booking,status,slot.device_id])
 
             })
         }
@@ -612,7 +782,7 @@ app.post('/admin/generate-slots',checkAPI_key,checkAuth,async(req,res) => {
             await connection.beginTransaction()
 
             await connection.query(`
-                INSERT INTO visit_slot (visit_date,starts_at,ends_at,capacity,status) VALUES ?
+                INSERT INTO visit_slot (visit_date,starts_at,ends_at,capacity,current_booking,status,device_id) VALUES ?
                 
                 `,[bulkValues])
 
