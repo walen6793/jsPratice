@@ -593,9 +593,10 @@ app.get('/slots', checkAPI_key,checkAuth, async (req,res) => {
 
 app.post('/booking-preview', checkAPI_key,checkAuth, async (req,res) => {
     try{
-        const {slot_id, visitor_id, inmate_id} = req.body
-        if (!slot_id || !visitor_id || !inmate_id){
-            throw new ValidationError("กรุณาระบุ slot_id, visitor_id และ inmate_id")
+        const userId = req.user.userId
+        const {slot_id, inmate_id} = req.body
+        if (!slot_id || !inmate_id){
+            throw new ValidationError("กรุณาระบุ slot_id และ inmate_id")
         }
         const [slotRows] = await db.execute(`
             SELECT u.id_card AS visitor_id_card, u.firstname AS visitor_firstname, u.lastname AS visitor_lastname
@@ -613,7 +614,7 @@ app.post('/booking-preview', checkAPI_key,checkAuth, async (req,res) => {
             JOIN inmate AS i ON i.id = ?
             JOIN devices AS d ON v.device_id = d.id
             WHERE v.id = ? ;
-        `, [visitor_id, inmate_id, slot_id])
+        `, [userId, inmate_id, slot_id])
 
         if (slotRows.length === 0){
             throw new ValidationError("ไม่พบข้อมูลช่องเวลาการเยี่ยมชมที่ระบุ")
@@ -626,9 +627,18 @@ app.post('/booking-preview', checkAPI_key,checkAuth, async (req,res) => {
             month: 'long',
             day: 'numeric',
         });
-        
+        const BookingPayload = {
+            slot_id: data.id,
+            inmate_id: inmate_id,
+            user_id: userId,
+            type : 'BOOKING_PREVIEW'
+
+        }
+        const bookingToken = jwt.sign(BookingPayload, process.env.JWT_SECRET, {expiresIn : '10m'})
+
         res.status(200).json({
             message : 'ข้อมูลพรีวิวการจองช่องเวลาการเยี่ยมชม',
+            bookingToken: bookingToken,
             data : {
                 visitor : {
                     id_card : data.visitor_id_card,
@@ -660,19 +670,42 @@ app.post('/booking-preview', checkAPI_key,checkAuth, async (req,res) => {
 app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
     const connection = await db.getConnection()
     try{
-        const userId = req.user.userId
-        const {slot_id, visitor_id, inmate_id} = req.body
-        if (!slot_id || !visitor_id || !inmate_id){
-            throw new ValidationError("กรุณาระบุ slot_id, visitor_id และ inmate_id")
+        const {bookingToken} = req.body
+        if (!bookingToken){
+            throw new ValidationError("กรุณาผ่านขั้นตอนการพรีวิวการจองก่อน")
+    
+        }
+        let decoded;
+        try{
+            decoded = jwt.verify(bookingToken, process.env.JWT_SECRET)
+        }catch(err){
+            throw new ValidationError("Token สำหรับการจองหมดอายุหรือไม่ถูกต้อง")
+
+        }
+        if (decoded.type !== 'BOOKING_PREVIEW'){
+            throw new ValidationError("รูปแบบ Token ไม่ถูกต้อง")
+        }
+
+        
+        const userId = decoded.user_id
+        const slot_id = decoded.slot_id
+        const inmate_id = decoded.inmate_id
+        
+
+        
+
+
+        if (!slot_id || !inmate_id || !userId){
+            throw new ValidationError("กรุณาระบุ slot_id ,userId และ inmate_id")
         }
         await connection.beginTransaction()
 
         //ตรวจสอบ slot_id ว่ายังว่างไหม
         const [slotRows] = await connection.execute(`
             SELECT s.id, s.visit_date,s.current_booking, s.capacity,s.status,b.relative_user_id
-            FROM visit_slot AS s JOIN visit_booking AS b ON s.id = b.slot_id
+            FROM visit_slot AS s LEFT JOIN visit_booking AS b ON s.id = b.slot_id AND b.relative_user_id = ?
             WHERE s.id = ? FOR UPDATE;
-        `, [slot_id]);
+        `, [userId,slot_id]);
         
 
         
