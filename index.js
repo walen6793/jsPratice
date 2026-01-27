@@ -662,7 +662,7 @@ app.get('/slots', checkAPI_key,checkAuth, async (req,res) => {
 app.post('/booking-preview', checkAPI_key,checkAuth, async (req,res) => {
     try{
         const userId = req.user.userId
-        const {slot_id, inmate_id} = req.body
+        const {inmate_id,slot_id} = req.query
         if (!slot_id || !inmate_id){
             throw new ValidationError("กรุณาระบุ slot_id และ inmate_id")
         }
