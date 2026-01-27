@@ -9,6 +9,7 @@ const { start } = require('repl')
 const dotenv = require('dotenv').config();
 const cors = require('cors')
 const jwt = require('jsonwebtoken')
+const moment = require('moment')
 
 
 const checkAPI_key = require('./middleware/checkAPI_key')
@@ -468,6 +469,75 @@ app.get('/inmate_info/:id', checkAPI_key,checkAuth, async (req,res) => {
     }
 })
 
+app.get('/inmate/slot', checkAPI_key,checkAuth, async (req,res) => {
+
+    try{
+        const myUserId = req.user.userId
+        const Max_Quota_Per_Month = 2
+
+
+// ต้องเปลี่ยน ID ผู้ต้องขัง เป็น inmateId
+        const sql = `SELECT i.id, ic.inmate_id , p.prefixes_nameTh , i.firstname , i.lastname,
+            i.inmate_photo_url,
+            (SELECT COUNT(*) FROM visit_booking AS vb JOIN visit_slot AS vs ON vb.slot_id = vs.id
+            WHERE vb.relative_user_id = ui.userId 
+            AND vb.inmate_id = i.id 
+            AND vb.status IN ('PENDING','APPROVED','CHECKED_IN','COMPLETED')
+            AND YEAR(vs.visit_date) = YEAR(CURDATE())
+            AND MONTH(vs.visit_date) = MONTH(CURDATE())
+            ) AS Quota_Used
+
+            FROM user_inmate_relationship AS ui
+            JOIN inmate AS i ON ui.inmateId = i.id
+            LEFT JOIN prefixes AS p ON i.prefixeID = p.id_prefixes 
+            LEFT JOIN incarcerations AS ic ON ic.inmate_rowID = i.id
+            WHERE ui.userId = ?`
+
+        const [myInmate] = await db.execute(sql,[myUserId]) 
+
+
+        if (myInmate.length === 0){
+            res.status(200).json({
+                message : 'ไม่มีข้อมูลผู้ต้องขังที่เกี่ยวข้อง',
+                data : []
+            })
+        }
+        const inmateList = myInmate.map(item => {
+            const used = item.Quota_Used;
+            const remaining = Math.max(0, Max_Quota_Per_Month - used)
+
+            return {
+                inmate_id : item.id,
+                inmate_number : item.inmate_id,
+                inmate_photo_url : item.inmate_photo_url,
+                fullname : (item.prefixes_nameTh || '') + ' ' + item.firstname + ' ' + item.lastname, 
+                Quota : {
+                    remaining : remaining,
+                    is_full : (remaining === 0)
+                }
+
+
+            }
+
+
+            
+
+        })
+        res.status(200).json({
+            message : 'ข้อมูลผู้ต้องขังที่เกี่ยวข้อง',
+            data : inmateList
+        })
+
+
+    }catch (error){
+        console.log(error) 
+        res.status(500).json({message: 'Internal Server Error'})
+    }
+
+})
+
+
+
 app.get('/slot/monthly', checkAPI_key,checkAuth, async (req,res) => {
     try{
         const myUserId = req.user.userId
@@ -520,8 +590,6 @@ app.get('/slots', checkAPI_key,checkAuth, async (req,res) => {
     // จองวันเดียวกันไม่ได้
     // Zoom ต้องสร้าง link ใหม่
     // zoom สามารถจองเวลาเดียวกันได้ไหม
-
-
     try{
         const {date, type} = req.query
         if (!date || !type){
@@ -621,6 +689,8 @@ app.post('/booking-preview', checkAPI_key,checkAuth, async (req,res) => {
         }
         console.log("ผลลัพธ์การดึงข้อมูลช่องเวลาการเยี่ยมชมสำหรับพรีวิวการจอง: ", slotRows[0])
         const data = slotRows[0]
+
+
 
         const thaiDate = new Date(data.visit_date).toLocaleDateString('th-TH', {
             year: 'numeric',
@@ -779,16 +849,13 @@ app.post('/admin/generate-slots',checkAPI_key,checkAuth,async(req,res) => {
         }
         const capasity_per_slot = 1
         const timeSlots = [
-            {starts_at : '09:15:00',end: '09:30:00',device_id : 6},
-            {starts_at : '10:15:00',end: '10:30:00',device_id : 6},
-            {starts_at : '11:15:00',end: '11:30:00',device_id : 6},
-            {starts_at : '12:15:00',end: '12:30:00',device_id : 6},
-            {starts_at : '13:15:00',end: '13:30:00',device_id : 6},
-            {starts_at : '14:15:00',end: '14:30:00',device_id : 6}
+            {starts_at : '09:00:00',end: '09:15:00',device_id : 3,allowed_gender : 'MALE'},
+            {starts_at : '10:15:00',end: '10:30:00',device_id : 3,allowed_gender : 'MALE'},
+            {starts_at : '11:15:00',end: '11:30:00',device_id : 3,allowed_gender : 'FEMALE'},
+            {starts_at : '12:15:00',end: '12:30:00',device_id : 3,allowed_gender : 'MALE'},
+            {starts_at : '13:15:00',end: '13:30:00',device_id : 3,allowed_gender : 'MALE'},
+            {starts_at : '14:15:00',end: '14:30:00',device_id : 3,allowed_gender : 'FEMALE'},
 
-        
-        
-        
         ]
         //คำนวณจำนวนวันในเดือน
         const daysInMonth = new Date(year,month,0).getDate()
@@ -806,7 +873,7 @@ app.post('/admin/generate-slots',checkAPI_key,checkAuth,async(req,res) => {
             }
             const dateString = currentDate.toISOString().split('T')[0];
             timeSlots.forEach(slot => {
-                bulkValues.push([dateString, slot.starts_at, slot.end,capasity_per_slot,current_booking,status,slot.device_id])
+                bulkValues.push([dateString, slot.starts_at, slot.end,capasity_per_slot,current_booking,status,slot.device_id,slot.allowed_gender])
 
             })
         }
@@ -815,7 +882,7 @@ app.post('/admin/generate-slots',checkAPI_key,checkAuth,async(req,res) => {
             await connection.beginTransaction()
 
             await connection.query(`
-                INSERT INTO visit_slot (visit_date,starts_at,ends_at,capacity,current_booking,status,device_id) VALUES ?
+                INSERT INTO visit_slot (visit_date,starts_at,ends_at,capacity,current_booking,status,device_id,allowed_gender) VALUES ?
                 
                 `,[bulkValues])
 
