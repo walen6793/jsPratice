@@ -761,10 +761,6 @@ app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
         const slot_id = decoded.slot_id
         const inmate_id = decoded.inmate_id
         
-
-        
-
-
         if (!slot_id || !inmate_id || !userId){
             throw new ValidationError("กรุณาระบุ slot_id ,userId และ inmate_id")
         }
@@ -829,15 +825,141 @@ app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
     }
 })
 
-// app.get('/check-booking', checkAPI_key,checkAuth, async (req,res) => {
+app.get('/my-booking', checkAPI_key,checkAuth, async (req,res) => {
 
-//     try{
-//         const userId = req.user.userId
-//         const [rows] = await db.execute(`
-//             SELECT 
-//             `)
-//     }
-// }
+    try{
+        const userId = req.user.userId
+        const [rows] = await db.execute(`
+            SELECT vb.id AS booking_id,vb.status AS status,p.prefixes_nameTh,
+            ic.inmate_id AS inmate_number,
+            i.firstname AS firstname,i.lastname AS lastname,
+            vb.slot_id AS slot_id,vs.visit_date AS visit_date, 
+            TIME_FORMAT(vs.starts_at, '%H:%i') AS starts_at, 
+            TIME_FORMAT(vs.ends_at, '%H:%i') AS ends_at,
+            d.device_name,
+            d.contact_info,d.access_code
+            FROM visit_booking AS vb
+            JOIN visit_slot AS vs ON vb.slot_id = vs.id
+            JOIN inmate AS i ON vb.inmate_id = i.id
+            LEFT JOIN prefixes AS p ON i.prefixeID = p.id_prefixes
+            JOIN devices AS d ON vs.device_id = d.id
+            LEFT JOIN incarcerations AS ic ON ic.inmate_rowID = i.id
+            WHERE vb.relative_user_id = ?
+            AND vb.status IN ('PENDING','APPROVED','CHECKED_IN')
+            ORDER BY vs.visit_date ASC, vs.starts_at ASC
+
+            `,[userId])
+            console.log("ผลลัพธ์การตรวจสอบการจองช่องเวลาการเยี่ยมชมที่มีอยู่: ", rows)
+            
+            if (rows.length === 0){
+                return  res.status(200).json({
+                    message : 'ไม่มีการจองช่องเวลาการเยี่ยมชมที่มีอยู่',
+                    data : []
+                })
+            }
+
+            const bookingInfo = rows.map(row => {
+                const thaiDate = new Date(row.visit_date).toLocaleDateString('th-TH', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+        });
+        return {
+            booking_id : row.booking_id,
+            status : row.status,
+            inmate_id : row.inmate_number,
+            inmate_fullname : `${row.prefixes_nameTh || ' '} ${row.firstname} ${row.lastname}`,
+            date : thaiDate,
+            time : `${row.starts_at} - ${row.ends_at}`,
+            device_name : row.device_name,
+            link : row.contact_info,
+            
+        }
+            })
+            res.status(200).json({
+                message : 'ข้อมูลการจองที่มีอยู่',
+                data : bookingInfo
+            })
+            
+            
+    }catch (error){
+        console.log(error)
+        res.status(500).json({message: 'Internal Server Error'})
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        
+
+    }
+})
+
+
+app.put('/booking/:id/cancel', checkAPI_key,checkAuth, async (req,res) => {
+    let connection;
+    try {
+        const user_id = req.user.userId
+        const booking_id = req.params.id
+        const {reason} = req.body
+        //ตรวจสอบการจอง
+        connection = await db.getConnection()
+        await connection.beginTransaction()
+
+
+        const [bookingRows] = await db.execute(`
+            SELECT vb.id, vb.slot_id, vb.status, vs.visit_date
+            FROM visit_booking AS vb
+            JOIN visit_slot AS vs ON vb.slot_id = vs.id
+            WHERE vb.id = ? AND vb.relative_user_id = ? AND vb.status NOT IN ('CANCELLED','COMPLETED') FOR UPDATE;
+        `, [booking_id, user_id])
+
+            
+        if (bookingRows.length === 0){
+            throw new ValidationError("ไม่พบการจองที่ระบุ")
+        }
+
+        const bookingData = bookingRows[0]
+        console.log("ข้อมูลการจองที่ตรวจสอบ: ", bookingData)
+        const today = new Date()
+        const visitDate = new Date(bookingData.visit_date)
+        const timeDiff = visitDate.getTime() - today.getTime()
+        const diffDays = Math.ceil(timeDiff / (1000 * 3600 * 24))
+
+        if (diffDays < 1){
+            throw new ValidationError("ไม่สามารถยกเลิกการจองได้เนื่องจากเหลือเวลาน้อยกว่า 1 วันก่อนวันเยี่ยมชม")
+        }
+        const [updateResult] = await db.execute(`
+            UPDATE visit_booking SET status = 'CANCELLED' 
+            WHERE id = ? AND relative_user_id = ? 
+            
+            `,[booking_id, user_id])
+        
+            if (updateResult.affectedRows === 0){
+                throw new ValidationError("ไม่สามารถยกเลิกการจองได้")
+            }
+        const [currentBookingRows] = await db.execute(`
+            UPDATE visit_slot SET current_booking = current_booking - 1
+            WHERE id = ? AND current_booking > 0
+            
+            `,[bookingData.slot_id])
+
+        await connection.commit()
+        res.status(200).json({
+            message : 'ยกเลิกการจองสำเร็จ',
+        })
+
+    }catch (error){
+        console.log(error)
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        res.status(500).json({message: 'Internal Server Error'})
+
+
+    }
+    
+
+
+})
 
 
 app.post('/admin/generate-slots',checkAPI_key,checkAuth,async(req,res) => {
@@ -849,12 +971,12 @@ app.post('/admin/generate-slots',checkAPI_key,checkAuth,async(req,res) => {
         }
         const capasity_per_slot = 1
         const timeSlots = [
-            {starts_at : '09:00:00',end: '09:15:00',device_id : 3,allowed_gender : 'MALE'},
-            {starts_at : '10:15:00',end: '10:30:00',device_id : 3,allowed_gender : 'MALE'},
-            {starts_at : '11:15:00',end: '11:30:00',device_id : 3,allowed_gender : 'FEMALE'},
-            {starts_at : '12:15:00',end: '12:30:00',device_id : 3,allowed_gender : 'MALE'},
-            {starts_at : '13:15:00',end: '13:30:00',device_id : 3,allowed_gender : 'MALE'},
-            {starts_at : '14:15:00',end: '14:30:00',device_id : 3,allowed_gender : 'FEMALE'},
+            {starts_at : '09:00:00',end: '09:15:00',device_id : 5,allowed_gender : 'MALE'},
+            {starts_at : '10:15:00',end: '10:30:00',device_id : 5,allowed_gender : 'MALE'},
+            {starts_at : '11:15:00',end: '11:30:00',device_id : 5,allowed_gender : 'FEMALE'},
+            {starts_at : '12:15:00',end: '12:30:00',device_id : 5,allowed_gender : 'MALE'},
+            {starts_at : '13:15:00',end: '13:30:00',device_id : 5,allowed_gender : 'MALE'},
+            {starts_at : '14:15:00',end: '14:30:00',device_id : 5,allowed_gender : 'FEMALE'},
 
         ]
         //คำนวณจำนวนวันในเดือน
