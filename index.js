@@ -16,7 +16,7 @@ const checkAPI_key = require('./middleware/checkAPI_key')
 const checkAuth = require('./middleware/checkAuth')
 const ValidationError = require('./validateErr/AppError')
 const { exitCode } = require('process')
-const { count } = require('console')
+const { count, time } = require('console')
 const port = process.env.PORT || 8000
 
 
@@ -472,8 +472,21 @@ app.get('/inmate_info/:id', checkAPI_key,checkAuth, async (req,res) => {
 app.get('/inmate/slot', checkAPI_key,checkAuth, async (req,res) => {
 
     try{
+        const {date} = req.query
         const myUserId = req.user.userId
         const Max_Quota_Per_Month = 2
+
+        if (!date){
+            throw new ValidationError("กรุณาระบุ date")
+
+        }
+        const dateObj = new Date(date)
+        if (isNaN(dateObj.getTime())){
+            throw new ValidationError("รูปแบบ date ไม่ถูกต้อง ควรเป็น YYYY-MM-DD")
+        }
+        const year = dateObj.getFullYear()
+        const month = dateObj.getMonth() + 1
+        
 
 
 // ต้องเปลี่ยน ID ผู้ต้องขัง เป็น inmateId
@@ -483,8 +496,8 @@ app.get('/inmate/slot', checkAPI_key,checkAuth, async (req,res) => {
             WHERE vb.relative_user_id = ui.userId 
             AND vb.inmate_id = i.id 
             AND vb.status IN ('PENDING','APPROVED','CHECKED_IN','COMPLETED')
-            AND YEAR(vs.visit_date) = YEAR(CURDATE())
-            AND MONTH(vs.visit_date) = MONTH(CURDATE())
+            AND YEAR(vs.visit_date) = ?
+            AND MONTH(vs.visit_date) = ?
             ) AS Quota_Used
 
             FROM user_inmate_relationship AS ui
@@ -493,7 +506,7 @@ app.get('/inmate/slot', checkAPI_key,checkAuth, async (req,res) => {
             LEFT JOIN incarcerations AS ic ON ic.inmate_rowID = i.id
             WHERE ui.userId = ?`
 
-        const [myInmate] = await db.execute(sql,[myUserId]) 
+        const [myInmate] = await db.execute(sql,[year,month,myUserId]) 
 
 
         if (myInmate.length === 0){
@@ -515,7 +528,7 @@ app.get('/inmate/slot', checkAPI_key,checkAuth, async (req,res) => {
                     remaining : remaining,
                     is_full : (remaining === 0)
                 }
-
+                
 
             }
 
@@ -523,7 +536,7 @@ app.get('/inmate/slot', checkAPI_key,checkAuth, async (req,res) => {
             
 
         })
-        res.status(200).json({
+        return res.status(200).json({
             message : 'ข้อมูลผู้ต้องขังที่เกี่ยวข้อง',
             data : inmateList
         })
@@ -584,6 +597,65 @@ app.get('/slot/monthly', checkAPI_key,checkAuth, async (req,res) => {
         res.status(500).json({message: 'Internal Server Error'})
     }
 })
+app.get('/slots/preview', checkAPI_key,checkAuth, async (req,res) => {
+    try{
+        const {inmate_id,date} = req.query
+        const myUserId = req.user.userId
+        if (!inmate_id || !date){   
+            throw new ValidationError("กรุณาระบุ inmate_id และ date")
+        }
+
+
+
+        const [rows] = await db.execute(`
+            SELECT ic.inmate_id , p.prefixes_nameTh, i.firstname ,i.lastname ,i.inmate_photo_url ,i.allow_visit
+            FROM user_inmate_relationship AS ui 
+            JOIN inmate AS i ON ui.inmateId = i.id 
+            LEFT JOIN prefixes as p ON i.prefixeID =  p.id_prefixes
+            JOIN incarcerations AS ic ON ic.inmate_rowID = i.id
+            WHERE ui.userId = ? AND ui.inmateId = ? AND ic.status = 'ACTIVE'
+
+            
+            `,[myUserId,inmate_id])
+        if (rows.length === 0){
+            throw new ValidationError("ไม่พบข้อมูลผู้ต้องขังที่เกี่ยวข้องหรือผู้ต้องขังนี้ไม่สามารถรับการเยี่ยมชมได้")
+        }
+        const thaiDate = new Date(date).toLocaleDateString('th-TH', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+        });
+        const inmateData = rows[0]
+        const isAllowVisit = (inmateData.allow_visit === 1)
+        return res.status(200).json({
+            message : 'ข้อมูลพรีวิวการจองช่องเวลาการเยี่ยมชม',
+            data : {
+                visit_date : thaiDate,
+                inmate_id : inmateData.inmate_id,
+                inmate_photo_url : inmateData.inmate_photo_url,
+                prefix_name : inmateData.prefixes_nameTh,
+                inmate_firstname : inmateData.firstname,
+                inmate_lastname : inmateData.lastname,
+                allow_visit : {
+                    isAllowVisit : isAllowVisit,
+                    message : isAllowVisit ? 'ผู้ต้องขังนี้สามารถรับการเยี่ยมชมได้' : 'ผู้ต้องขังนี้ไม่สามารถรับการเยี่ยมชมได้ เนื่องจากมีเหตุผลบางประการ เช่น สุขภาพไม่ดี หรือ อยู่ในระหว่างการถูกลงโทษทางวินัย'
+                }
+             }
+        })
+        
+
+    }catch (error){
+            console.log(error)
+            if (error instanceof ValidationError){
+                return res.status(error.statusCode).json({message: error.message})
+            }
+            return res.status(500).json({message: 'Internal Server Error'})
+
+        }
+    }
+    )
+
+
 app.get('/slots', checkAPI_key,checkAuth, async (req,res) => {
     // ควรแยกหญิงชาย กับ จำนวนที่ญาติจองได้แต่ละเดือน 
     // ต้องจองล่วงหน้าได้สูงสุดกี่วัน
@@ -659,7 +731,7 @@ app.get('/slots', checkAPI_key,checkAuth, async (req,res) => {
     }
 })
 
-app.post('/booking-preview', checkAPI_key,checkAuth, async (req,res) => {
+app.get('/booking-preview', checkAPI_key,checkAuth, async (req,res) => {
     try{
         const userId = req.user.userId
         const {inmate_id,slot_id} = req.query
@@ -675,7 +747,18 @@ app.post('/booking-preview', checkAPI_key,checkAuth, async (req,res) => {
             TIME_FORMAT(v.starts_at, '%H:%i') AS starts_at, 
             TIME_FORMAT(v.ends_at, '%H:%i') AS ends_at,
 
-            d.device_name AS device_name 
+            d.device_name AS device_name ,
+
+            (SELECT COUNT(*) FROM visit_booking AS vb JOIN visit_slot AS vs ON vb.slot_id = vs.id 
+            JOIN user_inmate_relationship AS ui ON vb.relative_user_id = ui.userId AND vb.inmate_id = ui.inmateId
+            WHERE vb.relative_user_id = u.userId AND
+            vb.inmate_id = i.id AND 
+            
+            vb.status IN ('PENDING','APPROVED','CHECKED_IN','COMPLETED')
+            AND YEAR(vs.visit_date) = YEAR(v.visit_date)
+            AND MONTH(vs.visit_date) = MONTH(v.visit_date)
+            ) AS Quota_Used
+
 
             FROM visit_slot AS v
             JOIN user AS u ON u.userId = ?
@@ -687,9 +770,15 @@ app.post('/booking-preview', checkAPI_key,checkAuth, async (req,res) => {
         if (slotRows.length === 0){
             throw new ValidationError("ไม่พบข้อมูลช่องเวลาการเยี่ยมชมที่ระบุ")
         }
-        console.log("ผลลัพธ์การดึงข้อมูลช่องเวลาการเยี่ยมชมสำหรับพรีวิวการจอง: ", slotRows[0])
         const data = slotRows[0]
+        console.log("quota " ,data.Quota_Used)
 
+
+        if (data.Quota_Used >= 2){ 
+            throw new ValidationError("คุณได้ใช้สิทธิ์การจองช่องเวลาการเยี่ยมชมสำหรับผู้ต้องขังนี้ครบตามโควต้าประจำเดือนแล้ว")
+        }
+        
+        console.log("ผลลัพธ์การดึงข้อมูลช่องเวลาการเยี่ยมชมสำหรับพรีวิวการจอง: ", slotRows[0])
 
 
         const thaiDate = new Date(data.visit_date).toLocaleDateString('th-TH', {
@@ -837,7 +926,9 @@ app.get('/my-booking', checkAPI_key,checkAuth, async (req,res) => {
             TIME_FORMAT(vs.starts_at, '%H:%i') AS starts_at, 
             TIME_FORMAT(vs.ends_at, '%H:%i') AS ends_at,
             d.device_name,
-            d.contact_info,d.access_code
+            d.contact_info,d.access_code,
+            vb.meeting_link
+
             FROM visit_booking AS vb
             JOIN visit_slot AS vs ON vb.slot_id = vs.id
             JOIN inmate AS i ON vb.inmate_id = i.id
@@ -864,6 +955,7 @@ app.get('/my-booking', checkAPI_key,checkAuth, async (req,res) => {
             month: 'long',
             day: 'numeric',
         });
+
         return {
             booking_id : row.booking_id,
             status : row.status,
@@ -872,7 +964,7 @@ app.get('/my-booking', checkAPI_key,checkAuth, async (req,res) => {
             date : thaiDate,
             time : `${row.starts_at} - ${row.ends_at}`,
             device_name : row.device_name,
-            link : row.contact_info,
+            link : row.meeting_link || null,
             
         }
             })
@@ -893,6 +985,80 @@ app.get('/my-booking', checkAPI_key,checkAuth, async (req,res) => {
     }
 })
 
+app.get('/my-booking/history',checkAPI_key,checkAuth, async (req,res) => {
+
+    try{
+        const userId = req.user.userId
+        
+
+        const [rows] = await db.execute(`
+            SELECT vb.id, vs.visit_date, vs.starts_at, vs.ends_at,vb.status ,
+            ic.inmate_id,p.prefixes_nameTh, i.firstname, i.lastname,d.device_name
+
+            FROM visit_booking AS vb 
+            JOIN visit_slot AS vs ON vb.slot_id = vs.id
+            JOIN inmate AS i ON vb.inmate_id = i.id
+            LEFT JOIN prefixes AS p ON i.prefixeID = p.id_prefixes
+            JOIN devices AS d ON vs.device_id = d.id
+            JOIN incarcerations AS ic ON ic.inmate_rowID = i.id
+            WHERE vb.relative_user_id = ? AND
+            vb.status IN ('CANCELLED','COMPLETED','REJECTED')
+            ORDER BY vs.visit_date DESC, vs.starts_at DESC
+
+
+            `,[userId])
+            console.log("ผลลัพธ์การตรวจสอบประวัติการจองช่องเวลาการเยี่ยมชม: ", rows)
+            if (rows.length === 0){
+                return res.status(200).json({
+                    message : 'ไม่มีประวัติการจองช่องเวลาการเยี่ยมชม',
+                    data : []
+                })
+            }
+            const bookingHistory = rows.map(row => {
+                const thaiDate = new Date(row.visit_date).toLocaleDateString('th-TH', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric'}
+
+                )
+                return {
+                    booking_id : row.id,
+
+                    inmate_info : {
+                        prefixe : row.prefixes_nameTh || ' ',
+                        firstname : row.firstname,
+                        lastname : row.lastname,
+                        inmate_id : row.inmate_id,
+                    },
+                    booking_info : {
+                        date : thaiDate,
+                        time : `${row.starts_at} - ${row.ends_at}`,
+                        device_name : row.device_name,
+                        status : row.status
+                    }
+
+
+                }
+            })
+            res.status(200).json({
+                message : 'ประวัติการจองช่องเวลาการเยี่ยมชม',
+                data : bookingHistory
+            })
+
+
+            
+            
+    }catch (error){
+        console.log(error)
+        
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        res.status(500).json({message: 'Internal Server Error'})
+
+}}
+)
+
 
 app.put('/booking/:id/cancel', checkAPI_key,checkAuth, async (req,res) => {
     let connection;
@@ -900,12 +1066,14 @@ app.put('/booking/:id/cancel', checkAPI_key,checkAuth, async (req,res) => {
         const user_id = req.user.userId
         const booking_id = req.params.id
         const {reason} = req.body
+        
+
         //ตรวจสอบการจอง
         connection = await db.getConnection()
         await connection.beginTransaction()
 
 
-        const [bookingRows] = await db.execute(`
+        const [bookingRows] = await connection.execute(`
             SELECT vb.id, vb.slot_id, vb.status, vs.visit_date
             FROM visit_booking AS vb
             JOIN visit_slot AS vs ON vb.slot_id = vs.id
@@ -927,16 +1095,17 @@ app.put('/booking/:id/cancel', checkAPI_key,checkAuth, async (req,res) => {
         if (diffDays < 1){
             throw new ValidationError("ไม่สามารถยกเลิกการจองได้เนื่องจากเหลือเวลาน้อยกว่า 1 วันก่อนวันเยี่ยมชม")
         }
-        const [updateResult] = await db.execute(`
-            UPDATE visit_booking SET status = 'CANCELLED' 
+        const userNote = `ยกเลิกโดยผู้ใช้: ${reason || 'ไม่ระบุเหตุผล'}`
+        const [updateResult] = await connection.execute(`
+            UPDATE visit_booking SET status = 'CANCELLED', note = ?
             WHERE id = ? AND relative_user_id = ? 
             
-            `,[booking_id, user_id])
+            `,[userNote, booking_id, user_id])
         
             if (updateResult.affectedRows === 0){
                 throw new ValidationError("ไม่สามารถยกเลิกการจองได้")
             }
-        const [currentBookingRows] = await db.execute(`
+        const [currentBookingRows] = await connection.execute(`
             UPDATE visit_slot SET current_booking = current_booking - 1
             WHERE id = ? AND current_booking > 0
             
@@ -949,18 +1118,266 @@ app.put('/booking/:id/cancel', checkAPI_key,checkAuth, async (req,res) => {
 
     }catch (error){
         console.log(error)
+        if(connection){
+            await connection.rollback()
+        }
         if (error instanceof ValidationError){
             return res.status(error.statusCode).json({message: error.message})
         }
         res.status(500).json({message: 'Internal Server Error'})
+        
 
-
+    }finally{
+        if (connection){
+            connection.release()
+        }
     }
     
 
 
 })
 
+
+
+app.get('/booking/:id/reschedule-preview', checkAPI_key,checkAuth, async (req,res) => {
+    try{
+        const user_id = req.user.userId
+        const booking_id = req.params.id
+        const todayTime = new Date().toLocaleDateString('en-CA', {timeZone : 'Asia/Bangkok'})
+
+
+        const [bookingRows] = await db.execute(`
+            SELECT ic.inmate_id,vb.id AS booking_id,i.firstname AS inmate_firstname, i.lastname AS inmate_lastname,vs.visit_date
+            FROM visit_booking AS vb
+            JOIN inmate AS i ON vb.inmate_id = i.id
+            JOIN incarcerations AS ic ON ic.inmate_rowID = i.id
+            JOIN visit_slot AS vs ON vb.slot_id = vs.id
+
+            WHERE vb.id = ? AND vb.relative_user_id = ? AND vb.status NOT IN ('CANCELLED','COMPLETED')
+            AND ic.status = 'ACTIVE' AND ic.release_date > ?
+
+            `,[booking_id, user_id, todayTime])
+            
+        if (bookingRows.length === 0){
+            throw new ValidationError("ไม่พบการจองที่ระบุหรือไม่สามารถเปลี่ยนรอบการเยี่ยมชมได้")
+        }
+        const bookingData = bookingRows[0]
+        
+
+        const today = new Date()
+        const visitDate = new Date(bookingData.visit_date)
+        const timeDiff = visitDate.getTime() - today.getTime()
+        
+        const diffHours = Math.ceil(timeDiff / (1000 * 3600))
+        
+        if (diffHours < 24){  
+            throw new ValidationError("ไม่สามารถเปลี่ยนรอบการเยี่ยมชมได้เนื่องจากเหลือเวลาน้อยกว่า 1 วันก่อนวันเยี่ยมชม")
+        }
+        console.log("ข้อมูลการจองที่ตรวจสอบสำหรับการเปลี่ยนรอบการเยี่ยมชม: ", bookingData)
+        return res.status(200).json({
+            message : 'ข้อมูลพรีวิวการเปลี่ยนรอบการเยี่ยมชม',
+            data : {
+                booking_id : bookingData.booking_id,
+                inmate_number : bookingData.inmate_id,
+                inmate_firstname : bookingData.inmate_firstname,
+                inmate_lastname : bookingData.inmate_lastname
+            }
+        })
+    }catch (error){
+        console.error(error)
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        return res.status(500).json({message: 'Internal Server Error'})
+    }
+})
+
+
+
+
+// app.put('/booking/:id/reschedule',checkAPI_key,checkAuth,async (req,res) => {
+//     let connection;
+//     try{
+//         const user_id = req.user.userId
+//         const booking_id = req.params.id
+//         const {new_slot_id} = req.body
+//         if (!new_slot_id){
+//             throw new ValidationError("กรุณาระบุ new_slot_id สำหรับการเปลี่ยนรอบการเยี่ยมชม")
+//         }
+//         connection = await db.getConnection()
+//         await connection.beginTransaction()
+
+//     }
+
+
+// })
+
+app.get('/admin/slots', checkAPI_key,checkAuth,async (req,res) => {
+    try{
+        const {date} = req.query
+        if (!date){
+            throw new ValidationError("กรุณาระบุ date")
+        }
+        const [rows] = await db.execute(`
+            SELECT i.firstname AS inmate_firstname, i.lastname AS inmate_lastname,
+                u.firstname AS visitor_firstname, u.lastname AS visitor_lastname,
+                vs.visit_date, vs.starts_at, vs.ends_at, d.device_name,
+
+             vb.id,vb.status ,vb.meeting_link 
+             FROM visit_booking AS vb
+             JOIN visit_slot AS vs ON vb.slot_id = vs.id
+             JOIN inmate AS i ON vb.inmate_id = i.id
+             JOIN user AS u ON vb.relative_user_id = u.userId
+             JOIN devices AS d ON vs.device_id = d.id
+             WHERE vs.visit_date = ? AND vb.status IN ('PENDING','APPROVED')
+             ORDER BY vs.starts_at ASC
+
+            
+            `,[date])
+            console.log("ผลลัพธ์การดึงข้อมูลช่องเวลาการเยี่ยมชมสำหรับแอดมิน: ", rows)
+            const statusMap = {
+                    'PENDING' : 'รอการอนุมัติ',
+                    'APPROVED' : 'อนุมัติแล้ว',
+                    'CHECKED_IN' : 'เช็คอินแล้ว',
+                    'COMPLETED' : 'เยี่ยมชมแล้ว',
+                    'CANCELLED' : 'ยกเลิกแล้ว',
+                    'REJECTED' : 'ถูกปฏิเสธ'
+                }
+            const bookingInfo = rows.map(row => {
+                
+                const thaiDate = new Date(row.visit_date).toLocaleDateString('th-TH',{
+                    year : 'numeric',
+                    month : 'long',
+                    day : 'numeric'
+                })
+                
+
+                return {
+                    inmate : {
+                        firstname : row.inmate_firstname,
+                        lastname : row.inmate_lastname
+
+                    },
+                    visitor : {
+                        firstname : row.visitor_firstname,
+                        lastname : row.visitor_lastname
+                    },
+                    slot : {
+                        booking_id : row.id,
+                        visit_date : thaiDate,
+                        time : `${row.starts_at} - ${row.ends_at}`,
+                        device_name : row.device_name,
+                        status : statusMap[row.status] || row.status,
+                        meeting_link : row.meeting_link || 'ยังไม่ได้ใส่ลิงก์'
+
+                    }
+                }
+            })
+            res.status(200).json({
+                message : 'ข้อมูลการจองช่องเวลาการเยี่ยมชมสำหรับแอดมิน',
+                data : bookingInfo
+            })
+
+    }catch (error){
+        console.error(error)
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        return res.status(500).json({message: 'Internal Server Error'})
+    }
+})
+app.put('/admin/slots/:id/link',checkAPI_key,checkAuth, async (req,res) => {
+    try{
+        const booking_id = req.params.id
+        const {meeting_link} = req.body
+        if (!meeting_link){
+            throw new ValidationError("กรุณาระบุ meeting_link สำหรับการอัปเดตช่องเวลาการเยี่ยมชม")
+        }
+        const [updateResult] = await db.execute(`
+            UPDATE visit_booking SET meeting_link = ? WHERE id = ?
+        `,[meeting_link || null, booking_id])
+            if (updateResult.affectedRows === 0){
+                throw new ValidationError("ไม่พบการจองที่ระบุหรือไม่สามารถอัปเดตลิงก์ได้")
+            }
+            res.status(200).json({
+                message : 'อัปเดตลิงก์การเยี่ยมชมสำเร็จ',
+                booking_id : booking_id,
+                meeting_link : meeting_link
+            })
+
+
+    }catch (error){
+        console.error(error)
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        return res.status(500).json({message: 'Internal Server Error'})
+    }
+}
+)
+app.put('/admin/slots/:id/cancel',checkAPI_key,checkAuth, async (req,res) => {
+    let connection;
+    try{
+        const booking_id = req.params.id
+        const {reason} = req.body 
+
+        if (!reason || reason.trim() === ''){
+            throw new ValidationError("กรุณาระบุ reason สำหรับการยกเลิกการจอง")
+        }
+
+        connection = await db.getConnection()
+
+        await connection.beginTransaction()
+
+
+        const [bookingRows] = await connection.execute(`
+            SELECT slot_id,status FROM visit_booking WHERE id = ? FOR UPDATE
+        `,[booking_id])
+            if (bookingRows.length === 0){
+                throw new ValidationError("ไม่พบการจองที่ระบุ")
+            }
+            const currentStatus = bookingRows[0].status
+            if (['CANCELLED','COMPLETED','REJECTED','CHECKED_IN'].includes(currentStatus)){
+                throw new ValidationError("ไม่สามารถยกเลิกการจองนี้ได้เนื่องจากสถานะปัจจุบันคือ " + currentStatus)
+            }
+            const adminNote = 'ยกเลิกโดยแอดมิน: ' + reason
+            
+            const [updateResult] = await connection.execute(`
+                UPDATE visit_booking SET status = 'REJECTED' ,note = ? WHERE id = ?
+                `,[adminNote, booking_id])
+            if (updateResult.affectedRows === 0){
+                throw new ValidationError("ไม่สามารถยกเลิกการจองได้")
+            }
+            await connection.execute(`UPDATE visit_slot SET current_booking = current_booking - 1 WHERE id = ? AND current_booking > 0`,
+                [bookingRows[0].slot_id]
+            )
+            await connection.commit()
+            res.status(200).json({
+                message : 'ยกเลิกการจองสำเร็จ',
+                booking_id : booking_id
+            })
+                
+
+    }catch (error){
+        console.error(error)
+        if (connection){
+            await connection.rollback()
+        }
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        return res.status(500).json({message: 'Internal Server Error'})
+    }finally{
+        if (connection){
+            try{
+                connection.release()
+            }catch (err){
+                console.error('Error during release:', err)
+            }
+        }
+    }
+}
+)
 
 app.post('/admin/generate-slots',checkAPI_key,checkAuth,async(req,res) => {
     let connection;
