@@ -528,7 +528,7 @@ app.get('/inmate/slot', checkAPI_key,checkAuth, async (req,res) => {
                     remaining : remaining,
                     is_full : (remaining === 0)
                 }
-                
+
 
             }
 
@@ -1253,6 +1253,7 @@ app.get('/admin/slots', checkAPI_key,checkAuth,async (req,res) => {
                 
 
                 return {
+                    booking_id : row.id,
                     inmate : {
                         firstname : row.inmate_firstname,
                         lastname : row.inmate_lastname
