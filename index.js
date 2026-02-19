@@ -15,6 +15,7 @@ const moment = require('moment')
 const checkAPI_key = require('./middleware/checkAPI_key')
 const checkAuth = require('./middleware/checkAuth')
 const ValidationError = require('./validateErr/AppError')
+const {createMeeting} = require('./services/zoomService')
 const { exitCode } = require('process')
 const { count, time } = require('console')
 const port = process.env.PORT || 8000
@@ -554,34 +555,63 @@ app.get('/inmate/slot', checkAPI_key,checkAuth, async (req,res) => {
 app.get('/slot/monthly', checkAPI_key,checkAuth, async (req,res) => {
     try{
         const myUserId = req.user.userId
-        const {year,month} = req.query
+        const {year,month,exclude_booking_id} = req.query
+        let booked_select_sql = 'SUM(vs.current_booking)';
+        let queryParams = []
+
         if (!year || !month){
             throw new ValidationError("กรุณาระบุ year และ month")
         }
+
+        if (exclude_booking_id){
+            console.log("มีการส่ง exclude_booking_id มา: ", exclude_booking_id)
+            booked_select_sql = `SUM(vs.current_booking) - (SELECT COUNT(*) FROM visit_booking AS vb 
+            JOIN visit_slot AS sub_vs ON vb.slot_id = sub_vs.id
+            WHERE vb.id = ? AND DATE(sub_vs.visit_date) = MAX(DATE(vs.visit_date))
+            
+            )`
+            queryParams.push(exclude_booking_id)
+        }
+        queryParams.push(year,month)
+
         const [rows] = await db.execute(`
-            SELECT visit_date , SUM(capacity) AS total_capacity, SUM(current_booking) AS total_booked, MAX(status) AS status
-            FROM visit_slot
-            WHERE YEAR(visit_date) = ? AND MONTH(visit_date) = ?
-            GROUP BY visit_date
-            ORDER BY visit_date ASC
-        `, [year, month])
+                SELECT DATE(vs.visit_date) AS visit_date , SUM(vs.capacity) AS total_capacity, ${booked_select_sql} AS total_booked, MAX(vs.status) AS status
+                FROM visit_slot AS vs
+                WHERE YEAR(vs.visit_date) = ? AND MONTH(vs.visit_date) = ?
+                GROUP BY DATE(vs.visit_date)
+                ORDER BY DATE(vs.visit_date) ASC
+            `, queryParams)
+            if (rows.length === 0){
+            return res.status(404).json({message: 'ไม่พบข้อมูลช่องเวลาการเยี่ยมชมในเดือนและปีที่ระบุ'})
+        }
+
         console.log("ผลลัพธ์การดึงข้อมูลช่องเวลาการเยี่ยมชมรายเดือน: ", rows)
         const calendarData = {}
 
         rows.forEach(row => {
             // แปลงวันที่เป็น String '2024-11-20'
-            const dateKey = row.visit_date.toISOString().split('T')[0];
             
+            const d = new Date(row.visit_date)
+            const yyyy = d.getFullYear()
+            const mm = String(d.getMonth() + 1).padStart(2, '0') 
+            const dd = String(d.getDate()).padStart(2, '0')
+        
+
+            const dateKey = `${yyyy}-${mm}-${dd}`
+            const thaiDate = d.toLocaleDateString('th-TH', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            })
             let status = 'AVAILABLE';
             if (row.total_booked >= row.total_capacity) {
                 status = 'FULL';
-            } else if (row.day_status === 'CLOSED') {
+            } else if (row.status === 'CLOSED') {
                 status = 'CLOSED';
             }
-
             calendarData[dateKey] = {
                 status: status,
-                seats_left: row.total_capacity - row.total_booked
+                seats_left: Math.max(0, row.total_capacity - row.total_booked)
             };
         });
 
@@ -663,7 +693,7 @@ app.get('/slots', checkAPI_key,checkAuth, async (req,res) => {
     // Zoom ต้องสร้าง link ใหม่
     // zoom สามารถจองเวลาเดียวกันได้ไหม
     try{
-        const {date, type} = req.query
+        const {date, type,exclude_booking_id} = req.query
         if (!date || !type){
             throw new ValidationError("กรุณาระบุ date และ type")
         }
@@ -779,7 +809,7 @@ app.get('/booking-preview', checkAPI_key,checkAuth, async (req,res) => {
         }
         
         console.log("ผลลัพธ์การดึงข้อมูลช่องเวลาการเยี่ยมชมสำหรับพรีวิวการจอง: ", slotRows[0])
-
+        
 
         const thaiDate = new Date(data.visit_date).toLocaleDateString('th-TH', {
             year: 'numeric',
@@ -857,7 +887,7 @@ app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
 
         //ตรวจสอบ slot_id ว่ายังว่างไหม
         const [slotRows] = await connection.execute(`
-            SELECT s.id, s.visit_date,s.current_booking, s.capacity,s.status,b.relative_user_id
+            SELECT s.id,s.starts_at,s.ends_at, s.visit_date,s.current_booking, s.capacity,s.status,b.relative_user_id
             FROM visit_slot AS s LEFT JOIN visit_booking AS b ON s.id = b.slot_id AND b.relative_user_id = ?
             WHERE s.id = ? FOR UPDATE;
         `, [userId,slot_id]);
@@ -869,6 +899,19 @@ app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
             throw new ValidationError("ไม่พบข้อมูลช่องเวลาการเยี่ยมชมที่ระบุ")
         }
         const slotData = slotRows[0]
+        
+        const d = new Date(slotData.visit_date)
+        const day = String(d.getDate()).padStart(2, '0')
+        const month = String(d.getMonth() + 1).padStart(2, '0')
+        const year = d.getFullYear()
+        const time = slotData.starts_at 
+        console.log("time = ",time)
+        
+        const formatedDate = `${year}-${month}-${day}T${time}`
+        const topic = `การเยี่ยมชมผู้ต้องขัง ${inmate_id} ในวันที่ ${formatedDate}`
+        console.log("วันที่และเวลาที่ฟอร์แมตสำหรับการสร้างการประชุม Zoom: ", formatedDate)
+        const zoomMeetingLink = await createMeeting(topic,formatedDate, 20)
+
         if (slotData.status === 'CLOSED'){
             throw new ValidationError("ช่องเวลาการเยี่ยมชมนี้ปิดรับการจองแล้ว")
         }
@@ -881,10 +924,12 @@ app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
         }
         
     //business logic ตรวจสอบการจองซ้ำ ยังไม่ได้ทำ
+    
+
 
     const [insertResult] = await connection.execute(`
-        INSERT INTO visit_booking (slot_id,inmate_id,relative_user_id)
-        VALUES (?,?,?)`, [slot_id, inmate_id, userId])
+        INSERT INTO visit_booking (slot_id,inmate_id,relative_user_id,meeting_password,join_url,starts_url)
+        VALUES (?,?,?,?,?,?)`, [slot_id, inmate_id, userId,zoomMeetingLink.password,zoomMeetingLink.join_url,zoomMeetingLink.start_url])
 
     if (insertResult.affectedRows === 0){
         throw new ValidationError("ไม่สามารถสร้างการจองได้")}
@@ -927,7 +972,7 @@ app.get('/my-booking', checkAPI_key,checkAuth, async (req,res) => {
             TIME_FORMAT(vs.ends_at, '%H:%i') AS ends_at,
             d.device_name,
             d.contact_info,d.access_code,
-            vb.meeting_link
+            vb.join_url
 
             FROM visit_booking AS vb
             JOIN visit_slot AS vs ON vb.slot_id = vs.id
@@ -964,7 +1009,7 @@ app.get('/my-booking', checkAPI_key,checkAuth, async (req,res) => {
             date : thaiDate,
             time : `${row.starts_at} - ${row.ends_at}`,
             device_name : row.device_name,
-            link : row.meeting_link || null,
+            link : row.join_url || null,
             
         }
             })
@@ -1059,6 +1104,25 @@ app.get('/my-booking/history',checkAPI_key,checkAuth, async (req,res) => {
 }}
 )
 
+// app.get('/booking/:id/cancel-preview',checkAPI_key,checkAuth,async (req,res) => {
+//     try{
+//         const userId = req.user.userId
+//         const booking_id = req.params.id
+
+//         const [rows] = await db.execute(`
+//             SELECT vb.id AS booking_id,ic.inmate_id AS inmate_number, 
+//             i.firstname AS inmate_firstname, i.lastname AS inmate_lastname,
+//             vs.visit_date ,TIME_FORMAT(vs.starts_at, '%H:%i') AS starts_at,
+//             TIME_FORMAT(vs.ends_at, '%H:%i') AS ends_at,
+//             d.device_name
+//             FROM visit_booking AS vb 
+//             JOIN visit_slot AS vs ON vb.slot_id = vs.id
+//             JOIN inmate AS i ON vb.inmate_id = i.id
+//             `)
+
+//     }
+// })
+
 
 app.put('/booking/:id/cancel', checkAPI_key,checkAuth, async (req,res) => {
     let connection;
@@ -1142,6 +1206,7 @@ app.put('/booking/:id/cancel', checkAPI_key,checkAuth, async (req,res) => {
 app.get('/booking/:id/reschedule-preview', checkAPI_key,checkAuth, async (req,res) => {
     try{
         const user_id = req.user.userId
+        
         const booking_id = req.params.id
         const todayTime = new Date().toLocaleDateString('en-CA', {timeZone : 'Asia/Bangkok'})
 
@@ -1177,7 +1242,7 @@ app.get('/booking/:id/reschedule-preview', checkAPI_key,checkAuth, async (req,re
         return res.status(200).json({
             message : 'ข้อมูลพรีวิวการเปลี่ยนรอบการเยี่ยมชม',
             data : {
-                booking_id : bookingData.booking_id,
+                old_booking_id : bookingData.booking_id,
                 inmate_number : bookingData.inmate_id,
                 inmate_firstname : bookingData.inmate_firstname,
                 inmate_lastname : bookingData.inmate_lastname
@@ -1194,23 +1259,32 @@ app.get('/booking/:id/reschedule-preview', checkAPI_key,checkAuth, async (req,re
 
 
 
-
 // app.put('/booking/:id/reschedule',checkAPI_key,checkAuth,async (req,res) => {
 //     let connection;
 //     try{
 //         const user_id = req.user.userId
 //         const booking_id = req.params.id
-//         const {new_slot_id} = req.body
-//         if (!new_slot_id){
-//             throw new ValidationError("กรุณาระบุ new_slot_id สำหรับการเปลี่ยนรอบการเยี่ยมชม")
+//         const {date,type} = req.query
+//         if (!date || !type){
+//             throw new ValidationError("กรุณาระบุ date และ type สำหรับการเปลี่ยนรอบการเยี่ยมชม")
 //         }
 //         connection = await db.getConnection()
 //         await connection.beginTransaction()
+
+
+
+
 
 //     }
 
 
 // })
+
+// app.get('/admin/inmates',checkAPI_key,checkAuth, async (req,res) => {
+//     try{
+//         const [rows] = await db.execute(``
+//     }
+
 
 app.get('/admin/slots', checkAPI_key,checkAuth,async (req,res) => {
     try{
@@ -1223,7 +1297,7 @@ app.get('/admin/slots', checkAPI_key,checkAuth,async (req,res) => {
                 u.firstname AS visitor_firstname, u.lastname AS visitor_lastname,
                 vs.visit_date, vs.starts_at, vs.ends_at, d.device_name,
 
-             vb.id,vb.status ,vb.meeting_link 
+             vb.id,vb.status ,vb.starts_url 
              FROM visit_booking AS vb
              JOIN visit_slot AS vs ON vb.slot_id = vs.id
              JOIN inmate AS i ON vb.inmate_id = i.id
@@ -1269,7 +1343,7 @@ app.get('/admin/slots', checkAPI_key,checkAuth,async (req,res) => {
                         time : `${row.starts_at} - ${row.ends_at}`,
                         device_name : row.device_name,
                         status : statusMap[row.status] || row.status,
-                        meeting_link : row.meeting_link || 'ยังไม่ได้ใส่ลิงก์'
+                        meeting_link : row.starts_url || 'ไม่มีลิงก์การเยี่ยมชม'
 
                     }
                 }
