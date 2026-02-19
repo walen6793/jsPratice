@@ -857,7 +857,7 @@ app.get('/booking-preview', checkAPI_key,checkAuth, async (req,res) => {
         })
 
 app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
-    const connection = await db.getConnection()
+    let connection;
     try{
         const {bookingToken} = req.body
         if (!bookingToken){
@@ -883,13 +883,14 @@ app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
         if (!slot_id || !inmate_id || !userId){
             throw new ValidationError("กรุณาระบุ slot_id ,userId และ inmate_id")
         }
+        connection = await db.getConnection()
         await connection.beginTransaction()
 
         //ตรวจสอบ slot_id ว่ายังว่างไหม
         const [slotRows] = await connection.execute(`
-            SELECT s.id,s.starts_at,s.ends_at, s.visit_date,s.current_booking, s.capacity,s.status,b.relative_user_id
-            FROM visit_slot AS s LEFT JOIN visit_booking AS b ON s.id = b.slot_id AND b.relative_user_id = ?
-            WHERE s.id = ? FOR UPDATE;
+            SELECT s.id,s.starts_at,s.ends_at, s.visit_date,s.current_booking, s.capacity,s.status,b.relative_user_id,b.status AS booking_status
+            FROM visit_slot AS s LEFT JOIN visit_booking AS b ON s.id = b.slot_id AND b.relative_user_id = ? AND b.status NOT IN ('CANCELLED','REJECTED')
+            WHERE s.id = ?  FOR UPDATE;
         `, [userId,slot_id]);
         
 
@@ -899,6 +900,17 @@ app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
             throw new ValidationError("ไม่พบข้อมูลช่องเวลาการเยี่ยมชมที่ระบุ")
         }
         const slotData = slotRows[0]
+        if (slotData.status === 'CLOSED'){
+            throw new ValidationError("ช่องเวลาการเยี่ยมชมนี้ปิดรับการจองแล้ว")
+        }
+        if (slotData.booking_status && slotData.booking_status !== 'CANCELLED' && slotData.booking_status !== 'REJECTED'){
+            throw new ValidationError("คุณมีการจองช่องเวลาการเยี่ยมชมนี้อยู่แล้ว")
+        }
+
+        console.log("ข้อมูลช่องเวลาการเยี่ยมชมที่ตรวจสอบการจอง: ", slotData)
+        if (slotData.current_booking >= slotData.capacity){
+            throw new ValidationError("ช่องเวลาการเยี่ยมชมนี้เต็มแล้ว")
+        }
         
         const d = new Date(slotData.visit_date)
         const day = String(d.getDate()).padStart(2, '0')
@@ -912,16 +924,7 @@ app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
         console.log("วันที่และเวลาที่ฟอร์แมตสำหรับการสร้างการประชุม Zoom: ", formatedDate)
         const zoomMeetingLink = await createMeeting(topic,formatedDate, 20)
 
-        if (slotData.status === 'CLOSED'){
-            throw new ValidationError("ช่องเวลาการเยี่ยมชมนี้ปิดรับการจองแล้ว")
-        }
-        if (slotData.relative_user_id == userId){
-            throw new ValidationError("คุณได้ทำการจองช่องเวลาการเยี่ยมชมนี้ไปแล้ว")
-        }
-        console.log("ข้อมูลช่องเวลาการเยี่ยมชมที่ตรวจสอบการจอง: ", slotData)
-        if (slotData.current_booking >= slotData.capacity){
-            throw new ValidationError("ช่องเวลาการเยี่ยมชมนี้เต็มแล้ว")
-        }
+        
         
     //business logic ตรวจสอบการจองซ้ำ ยังไม่ได้ทำ
     
@@ -945,17 +948,25 @@ app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
 
     }catch (error){
         console.log(error)
-        await connection.rollback()
+        if (connection){
+            try{
+                await connection.rollback()
+            }catch (err){
+                console.error('Error during rollback:', err)
+            }
+        }
         if (error instanceof ValidationError){
             return res.status(error.statusCode).json({message: error.message})
         }
         res.status(500).json({message: 'Internal Server Error'})
     }finally{
+        if (connection){
         try{
             connection.release()
-        }catch (err){
-            console.error('Error during release:', err)
         }
+        catch (err){
+            console.error('Error during release:', err)
+        }}
     }
 })
 
