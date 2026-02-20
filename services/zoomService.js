@@ -66,4 +66,22 @@ async function createMeeting(topic,start_time,duration){
     }
 }
 
-module.exports = { createMeeting };
+async function deleteZoomMeeting(meetingId) {
+    try{
+        const token = await getZoomAccessToken();
+        console.log(`กำลังสั่ง Zoom ลบห้องประชุมที่มี ID: ${meetingId}...`);
+        await axios.delete(`https://api.zoom.us/v2/meetings/${meetingId}`,{headers : {
+            'Authorization': `Bearer ${token}`,
+        }});
+        console.log("ลบห้องประชุมสำเร็จ!");
+        return true;
+
+
+    }catch(error){
+        console.error("ลบห้องประชุมไม่สำเร็จ:", error.response ? error.response.data : error.message);
+        return false;
+    }
+}
+
+
+module.exports = { createMeeting, deleteZoomMeeting };

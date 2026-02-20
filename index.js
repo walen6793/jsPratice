@@ -15,7 +15,7 @@ const moment = require('moment')
 const checkAPI_key = require('./middleware/checkAPI_key')
 const checkAuth = require('./middleware/checkAuth')
 const ValidationError = require('./validateErr/AppError')
-const {createMeeting} = require('./services/zoomService')
+const {createMeeting,deleteZoomMeeting} = require('./services/zoomService')
 const { exitCode } = require('process')
 const { count, time } = require('console')
 const port = process.env.PORT || 8000
@@ -384,7 +384,7 @@ app.get('/inmate_info', checkAPI_key,checkAuth, async (req,res) => {
 
     try{
         const myUserId = req.user.userId
-        const [inmate] = await db.execute('SELECT u.userId, u.inmateId , p.prefixes_nameTh , i.firstname ,i.lastname  FROM user_inmate_relationship AS u LEFT JOIN inmate AS i ON u.inmateId = i.id LEFT JOIN prefixes AS p ON i.prefixeID = p.id_prefixes WHERE u.userId = ?',[myUserId])
+        const [inmate] = await db.execute('SELECT u.userId, u.inmateId , p.prefixes_nameTh , i.firstname ,i.lastname , i.inmate_photo_url ,i.allow_visit ,ic.inmate_id AS inmate_number FROM user_inmate_relationship AS u JOIN incarcerations AS ic ON u.inmateId = ic.inmate_rowID LEFT JOIN inmate AS i ON u.inmateId = i.id LEFT JOIN prefixes AS p ON i.prefixeID = p.id_prefixes WHERE u.userId = ?',[myUserId])
         
         if (inmate.length === 0){
             res.status(200).json({
@@ -395,9 +395,15 @@ app.get('/inmate_info', checkAPI_key,checkAuth, async (req,res) => {
         }
         console.log("ข้อมูลผู้ต้องขังที่เกี่ยวข้อง: ", inmate)
         
-        const inmateList = inmate.map(item => ({
+        const inmateList = inmate.map(item => ( {
+            
+
+            
             id : item.inmateId,
-            fullname : (item.prefixes_nameTh || '') + ' ' + item.firstname + ' ' + item.lastname
+            inmate_number : item.inmate_number,
+            fullname : (item.prefixes_nameTh || '') + ' ' + item.firstname + ' ' + item.lastname,
+            photo_url : item.inmate_photo_url,
+            allow_visit : item.allow_visit === 1 ? 'ผู้ต้องขังนี้สามารถรับการเยี่ยมชมได้' : 'ผู้ต้องขังนี้ไม่สามารถรับการเยี่ยมชมได้ เนื่องจากมีเหตุผลบางประการ เช่น สุขภาพไม่ดี หรือ อยู่ในระหว่างการถูกลงโทษ'
         }))
 
         res.status(200).json({
@@ -417,7 +423,7 @@ app.get('/inmate_info/:id', checkAPI_key,checkAuth, async (req,res) => {
         const inmateId = req.params.id
         const myUserId = req.user.userId
         const sql = `
-                        SELECT n.inmate_id ,p.prefixes_nameTh, i.firstname ,i.lastname ,DATE_FORMAT(i.birthdate, '%d/%m/%Y') AS birthdate, i.blood_type,i.inmate_photo_url ,n.case_type ,DATE_FORMAT(n.admission_date, '%d/%m/%Y') AS admission_date , DATE_FORMAT(n.release_date, '%d/%m/%Y') AS release_date ,n.status ,t.inmate_type ,l.location_name ,r.prison_name, TIMESTAMPDIFF( YEAR, i.birthdate, CURDATE() ) AS age
+                        SELECT n.inmate_id ,p.prefixes_nameTh, i.firstname ,i.lastname ,DATE_FORMAT(i.birthdate, '%d/%m/%Y') AS birthdate, i.inmate_photo_url ,n.case_type ,DATE_FORMAT(n.admission_date, '%d/%m/%Y') AS admission_date , DATE_FORMAT(n.release_date, '%d/%m/%Y') AS release_date ,n.status ,t.inmate_type ,l.location_name ,r.prison_name, TIMESTAMPDIFF( YEAR, i.birthdate, CURDATE() ) AS age
                         FROM user_inmate_relationship AS u 
                         LEFT JOIN inmate AS i ON u.inmateId = i.id 
                         LEFT JOIN prefixes as p ON i.prefixeID =  p.id_prefixes 
@@ -465,7 +471,7 @@ app.get('/inmate_info/:id', checkAPI_key,checkAuth, async (req,res) => {
             }
         })
     }catch (error){
-        console.log(error)
+        console.error(error)
         res.status(500).json({message: 'Internal Server Error'})
     }
 })
@@ -888,8 +894,8 @@ app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
 
         //ตรวจสอบ slot_id ว่ายังว่างไหม
         const [slotRows] = await connection.execute(`
-            SELECT s.id,s.starts_at,s.ends_at, s.visit_date,s.current_booking, s.capacity,s.status,b.relative_user_id,b.status AS booking_status
-            FROM visit_slot AS s LEFT JOIN visit_booking AS b ON s.id = b.slot_id AND b.relative_user_id = ? AND b.status NOT IN ('CANCELLED','REJECTED')
+            SELECT s.id,s.starts_at,s.ends_at, s.visit_date,s.current_booking, s.capacity,s.status,b.relative_user_id,b.status AS booking_status,d.platforms
+            FROM visit_slot AS s LEFT JOIN visit_booking AS b ON s.id = b.slot_id AND b.relative_user_id = ? AND b.status NOT IN ('CANCELLED','REJECTED') JOIN devices AS d ON s.device_id = d.id
             WHERE s.id = ?  FOR UPDATE;
         `, [userId,slot_id]);
         
@@ -911,28 +917,45 @@ app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
         if (slotData.current_booking >= slotData.capacity){
             throw new ValidationError("ช่องเวลาการเยี่ยมชมนี้เต็มแล้ว")
         }
+        console.log("ช่องเวลาการเยี่ยมชมนี้ยังมีที่ว่างอยู่ สามารถทำการจองได้",slotData.platforms)
+        const randomStr = Math.random().toString(36).substring(2, 8).toUpperCase();
+        const bk_type = slotData.platforms === 'ZOOM' ? 'ZM' : 'LN' 
+        let bookingCode = `${bk_type}-${randomStr}`;
         
-        const d = new Date(slotData.visit_date)
-        const day = String(d.getDate()).padStart(2, '0')
-        const month = String(d.getMonth() + 1).padStart(2, '0')
-        const year = d.getFullYear()
-        const time = slotData.starts_at 
-        console.log("time = ",time)
-        
-        const formatedDate = `${year}-${month}-${day}T${time}`
-        const topic = `การเยี่ยมชมผู้ต้องขัง ${inmate_id} ในวันที่ ${formatedDate}`
-        console.log("วันที่และเวลาที่ฟอร์แมตสำหรับการสร้างการประชุม Zoom: ", formatedDate)
-        const zoomMeetingLink = await createMeeting(topic,formatedDate, 20)
+        let meeting_id = null;
+        let meeting_password = null;
+        let join_url = null;
+        let start_url = null;
 
         
+
+        if (slotData.platforms === 'ZOOM'){
+            const d = new Date(slotData.visit_date)
+            const day = String(d.getDate()).padStart(2, '0')
+            const month = String(d.getMonth() + 1).padStart(2, '0')
+            const year = d.getFullYear()
+            const time = slotData.starts_at 
+            console.log("time = ",time)
+            
+            const formatedDate = `${year}-${month}-${day}T${time}`
+            const topic = `การเยี่ยมชมผู้ต้องขัง ${inmate_id} ในวันที่ ${formatedDate}`
+            console.log("วันที่และเวลาที่ฟอร์แมตสำหรับการสร้างการประชุม Zoom: ", formatedDate)
+            const zoomMeetingLink = await createMeeting(topic,formatedDate, 20)
+            
+                meeting_id = zoomMeetingLink.meeting_id
+                meeting_password = zoomMeetingLink.password
+                join_url = zoomMeetingLink.join_url
+                start_url = zoomMeetingLink.start_url
+            
+        }
         
     //business logic ตรวจสอบการจองซ้ำ ยังไม่ได้ทำ
     
 
 
     const [insertResult] = await connection.execute(`
-        INSERT INTO visit_booking (slot_id,inmate_id,relative_user_id,meeting_password,join_url,starts_url)
-        VALUES (?,?,?,?,?,?)`, [slot_id, inmate_id, userId,zoomMeetingLink.password,zoomMeetingLink.join_url,zoomMeetingLink.start_url])
+        INSERT INTO visit_booking (slot_id,inmate_id,relative_user_id,meeting_id,meeting_password,join_url,starts_url,booking_code)
+        VALUES (?,?,?,?,?,?,?,?)`, [slot_id, inmate_id, userId,meeting_id,meeting_password,join_url,start_url,bookingCode])
 
     if (insertResult.affectedRows === 0){
         throw new ValidationError("ไม่สามารถสร้างการจองได้")}
@@ -943,7 +966,10 @@ app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
     await connection.commit()
     res.status(201).json({
         message : 'การจองช่องเวลาการเยี่ยมชมสำเร็จ',
-        booking_id : insertResult.insertId
+        booking_id : insertResult.insertId,
+        booking_code : bookingCode,
+
+
     })
 
     }catch (error){
@@ -982,8 +1008,8 @@ app.get('/my-booking', checkAPI_key,checkAuth, async (req,res) => {
             TIME_FORMAT(vs.starts_at, '%H:%i') AS starts_at, 
             TIME_FORMAT(vs.ends_at, '%H:%i') AS ends_at,
             d.device_name,
-            d.contact_info,d.access_code,
-            vb.join_url
+            d.platforms,
+            vb.join_url,vb.booking_code
 
             FROM visit_booking AS vb
             JOIN visit_slot AS vs ON vb.slot_id = vs.id
@@ -993,7 +1019,7 @@ app.get('/my-booking', checkAPI_key,checkAuth, async (req,res) => {
             LEFT JOIN incarcerations AS ic ON ic.inmate_rowID = i.id
             WHERE vb.relative_user_id = ?
             AND vb.status IN ('PENDING','APPROVED','CHECKED_IN')
-            ORDER BY vs.visit_date ASC, vs.starts_at ASC
+            ORDER BY vs.visit_date DESC, vs.starts_at DESC
 
             `,[userId])
             console.log("ผลลัพธ์การตรวจสอบการจองช่องเวลาการเยี่ยมชมที่มีอยู่: ", rows)
@@ -1004,13 +1030,22 @@ app.get('/my-booking', checkAPI_key,checkAuth, async (req,res) => {
                     data : []
                 })
             }
+            const lineOaLink = process.env.LINE_OA_ID || '@171ihkfk'
 
             const bookingInfo = rows.map(row => {
+                let actionUrl = null
                 const thaiDate = new Date(row.visit_date).toLocaleDateString('th-TH', {
             year: 'numeric',
             month: 'long',
             day: 'numeric',
         });
+                if(row.platforms === 'ZOOM'){
+                    actionUrl = row.join_url
+                }else if (row.platforms === 'LINE'){
+                    const raw_message = `เวลา:${row.starts_at}-ชื่อ:${row.firstname}-รหัสการจอง:${row.booking_code}`
+                    const encoded_message = encodeURIComponent(raw_message)
+                    actionUrl = `https://line.me/R/oaMessage/${lineOaLink}/?text=${encoded_message}`
+                }
 
         return {
             booking_id : row.booking_id,
@@ -1020,7 +1055,9 @@ app.get('/my-booking', checkAPI_key,checkAuth, async (req,res) => {
             date : thaiDate,
             time : `${row.starts_at} - ${row.ends_at}`,
             device_name : row.device_name,
-            link : row.join_url || null,
+            device_platform : row.platforms,
+            bookingCode : row.booking_code,
+            link : actionUrl,
             
         }
             })
@@ -1149,7 +1186,7 @@ app.put('/booking/:id/cancel', checkAPI_key,checkAuth, async (req,res) => {
 
 
         const [bookingRows] = await connection.execute(`
-            SELECT vb.id, vb.slot_id, vb.status, vs.visit_date
+            SELECT vb.id, vb.slot_id, vb.status,vb.meeting_id, vs.visit_date
             FROM visit_booking AS vb
             JOIN visit_slot AS vs ON vb.slot_id = vs.id
             WHERE vb.id = ? AND vb.relative_user_id = ? AND vb.status NOT IN ('CANCELLED','COMPLETED') FOR UPDATE;
@@ -1163,14 +1200,17 @@ app.put('/booking/:id/cancel', checkAPI_key,checkAuth, async (req,res) => {
         const bookingData = bookingRows[0]
         console.log("ข้อมูลการจองที่ตรวจสอบ: ", bookingData)
         const today = new Date()
+        today.setHours(0,0,0,0)
         const visitDate = new Date(bookingData.visit_date)
+        visitDate.setHours(0,0,0,0)
         const timeDiff = visitDate.getTime() - today.getTime()
         const diffDays = Math.ceil(timeDiff / (1000 * 3600 * 24))
 
-        if (diffDays < 1){
+        if (diffDays <= 1){
             throw new ValidationError("ไม่สามารถยกเลิกการจองได้เนื่องจากเหลือเวลาน้อยกว่า 1 วันก่อนวันเยี่ยมชม")
         }
         const userNote = `ยกเลิกโดยผู้ใช้: ${reason || 'ไม่ระบุเหตุผล'}`
+        
         const [updateResult] = await connection.execute(`
             UPDATE visit_booking SET status = 'CANCELLED', note = ?
             WHERE id = ? AND relative_user_id = ? 
@@ -1180,6 +1220,10 @@ app.put('/booking/:id/cancel', checkAPI_key,checkAuth, async (req,res) => {
             if (updateResult.affectedRows === 0){
                 throw new ValidationError("ไม่สามารถยกเลิกการจองได้")
             }
+            if(bookingData.meeting_id){
+            deleteZoomMeeting(bookingData.meeting_id)
+        }
+        
         const [currentBookingRows] = await connection.execute(`
             UPDATE visit_slot SET current_booking = current_booking - 1
             WHERE id = ? AND current_booking > 0
@@ -1306,9 +1350,9 @@ app.get('/admin/slots', checkAPI_key,checkAuth,async (req,res) => {
         const [rows] = await db.execute(`
             SELECT i.firstname AS inmate_firstname, i.lastname AS inmate_lastname,
                 u.firstname AS visitor_firstname, u.lastname AS visitor_lastname,
-                vs.visit_date, vs.starts_at, vs.ends_at, d.device_name,
+                vs.visit_date, TIME_FORMAT(vs.starts_at, '%H:%i') AS starts_at, TIME_FORMAT(vs.ends_at, '%H:%i') AS ends_at, d.device_name,d.platforms,
 
-             vb.id,vb.status ,vb.starts_url 
+             vb.id,vb.status ,vb.starts_url ,vb.booking_code
              FROM visit_booking AS vb
              JOIN visit_slot AS vs ON vb.slot_id = vs.id
              JOIN inmate AS i ON vb.inmate_id = i.id
@@ -1328,14 +1372,20 @@ app.get('/admin/slots', checkAPI_key,checkAuth,async (req,res) => {
                     'CANCELLED' : 'ยกเลิกแล้ว',
                     'REJECTED' : 'ถูกปฏิเสธ'
                 }
+            const lineOaLink = process.env.LINE_OA_ID || '@171ihkfk'
             const bookingInfo = rows.map(row => {
-                
+                let actionUrl = null
                 const thaiDate = new Date(row.visit_date).toLocaleDateString('th-TH',{
                     year : 'numeric',
                     month : 'long',
                     day : 'numeric'
                 })
-                
+                if(row.platforms === 'ZOOM'){
+                    actionUrl = row.starts_url
+                }else if (row.platforms === 'LINE'){
+                    
+                    actionUrl = `เวลา:${row.starts_at}-ชื่อ:${row.inmate_firstname}-รหัสการจอง:${row.booking_code}`
+                }
 
                 return {
                     booking_id : row.id,
@@ -1354,7 +1404,9 @@ app.get('/admin/slots', checkAPI_key,checkAuth,async (req,res) => {
                         time : `${row.starts_at} - ${row.ends_at}`,
                         device_name : row.device_name,
                         status : statusMap[row.status] || row.status,
-                        meeting_link : row.starts_url || 'ไม่มีลิงก์การเยี่ยมชม'
+                        device_platform : row.platforms,
+                        bookingCode : row.booking_code,
+                        meeting_link : actionUrl
 
                     }
                 }
@@ -1474,12 +1526,12 @@ app.post('/admin/generate-slots',checkAPI_key,checkAuth,async(req,res) => {
         }
         const capasity_per_slot = 1
         const timeSlots = [
-            {starts_at : '09:00:00',end: '09:15:00',device_id : 5,allowed_gender : 'MALE'},
-            {starts_at : '10:15:00',end: '10:30:00',device_id : 5,allowed_gender : 'MALE'},
-            {starts_at : '11:15:00',end: '11:30:00',device_id : 5,allowed_gender : 'FEMALE'},
-            {starts_at : '12:15:00',end: '12:30:00',device_id : 5,allowed_gender : 'MALE'},
-            {starts_at : '13:15:00',end: '13:30:00',device_id : 5,allowed_gender : 'MALE'},
-            {starts_at : '14:15:00',end: '14:30:00',device_id : 5,allowed_gender : 'FEMALE'},
+            {starts_at : '09:00:00',end: '09:15:00',device_id : 3,allowed_gender : 'MALE'},
+            {starts_at : '10:15:00',end: '10:30:00',device_id : 3,allowed_gender : 'MALE'},
+            {starts_at : '11:15:00',end: '11:30:00',device_id : 3,allowed_gender : 'FEMALE'},
+            {starts_at : '12:15:00',end: '12:30:00',device_id : 3,allowed_gender : 'MALE'},
+            {starts_at : '13:15:00',end: '13:30:00',device_id : 3,allowed_gender : 'MALE'},
+            {starts_at : '14:15:00',end: '14:30:00',device_id : 3,allowed_gender : 'FEMALE'},
 
         ]
         //คำนวณจำนวนวันในเดือน
