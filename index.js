@@ -1465,7 +1465,7 @@ app.get('/booking/:id/reschedule/preview', checkAPI_key,checkAuth, async (req,re
 
 })
 
-app.put('/booking/reschedule',checkAPI_key,checkAuth,async (req,res) => {
+app.post('/booking/reschedule',checkAPI_key,checkAuth,async (req,res) => {
     let connection;
     
 
