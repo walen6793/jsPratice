@@ -1358,10 +1358,11 @@ app.get('/booking/:id/reschedule/preview', checkAPI_key,checkAuth, async (req,re
 
 
         const [old_info] = await db.execute(`
-            SELECT TIME_FORMAT(vs.starts_at, '%H:%i') AS starts_at, TIME_FORMAT(vs.ends_at, '%H:%i') AS ends_at, vs.visit_date,
+            SELECT TIME_FORMAT(vs.starts_at, '%H:%i') AS starts_at, TIME_FORMAT(vs.ends_at, '%H:%i') AS ends_at, vs.visit_date,vb.slot_id,
             ic.inmate_id AS inmate_number,i.firstname AS inmate_firstname,i.lastname AS inmate_lastname,
             u.id_card AS visitor_idCard,u.firstname AS visitor_firstname, u.lastname AS visitor_lastname,
-            d.device_name,d.platforms
+            d.device_name,d.platforms,
+            vb.status
 
             FROM visit_booking AS vb JOIN inmate AS i ON vb.inmate_id = i.id 
             JOIN visit_slot AS vs ON vb.slot_id = vs.id
@@ -1376,6 +1377,13 @@ app.get('/booking/:id/reschedule/preview', checkAPI_key,checkAuth, async (req,re
             }      
         
         const oldInfo = old_info[0]
+        if (oldInfo.slot_id === new_slot_id){
+            throw new ValidationError('คิวนี้ถูกเลื่อนไปแล้วไม่สามารถเลื่อนซ้ำได้')
+        }
+        if (oldInfo.status === 'CANCELLED' || oldInfo.status === 'REJECTED'){
+            throw new ValidationError('คิวนี้โดนยกเลิกไปแล้ว')
+        }
+
 
         const oldDateTH = new Date(oldInfo.visit_date).toLocaleDateString('th-TH',{
             year : 'numeric',
@@ -1505,6 +1513,11 @@ app.post('/booking/reschedule',checkAPI_key,checkAuth,async (req,res) => {
         }
 
         const old_slot = old[0]
+        if (old_slot.slot_id === new_slot_id) {
+            throw new ValidationError('คุณเลื่อนการจองนี้ไปแล้ว ไม่สามารถเลื่อนซ้ำได้')
+
+        }
+
 
         const [newSlotRows] = await connection.execute(`
             SELECT vs.id,vs.visit_date,TIME_FORMAT(vs.starts_at,'%H:%i') AS starts_at,TIME_FORMAT(vs.ends_at,'%H:%i') AS ends_at,vs.capacity,vs.current_booking,vs.status,d.id AS device_id,d.platforms FROM visit_slot AS vs JOIN devices AS d ON vs.device_id = d.id WHERE vs.id = ? FOR UPDATE
@@ -1578,10 +1591,15 @@ app.post('/booking/reschedule',checkAPI_key,checkAuth,async (req,res) => {
                 ]
                 )
 
-            await connection.execute(`UPDATE visit_slot SET current_booking = current_booking + 1 WHERE id = ?`,[old_slot.slot_id])
-            await connection.execute(`UPDATE visit_slot SET current_booking = current_booking - 1 WHERE id = ?`,[newSlot.id])
+        const [oldUpdate] = await connection.execute(`UPDATE visit_slot SET current_booking = current_booking - 1 WHERE id = ? AND current_booking > 0`,[old_slot.slot_id])
+        const [newUpdate] = await connection.execute(`UPDATE visit_slot SET current_booking = current_booking + 1 WHERE id = ? AND current_booking < capacity`,[newSlot.id])
 
-            await connection.commit();
+        if (newUpdate.affectedRows === 0) {
+            // ถ้า affectedRows = 0 แปลว่าเงื่อนไข current_booking < capacity ไม่เป็นจริง (คิวเต็มแล้ว!)
+            throw new ValidationError("ขออภัย คิวใหม่เต็มแล้วในขณะที่คุณกำลังทำรายการ");
+        }
+
+        await connection.commit();
         res.status(200).json({
             message: 'เลื่อนการจองสำเร็จ',
             new_booking_code: current_booking_code
