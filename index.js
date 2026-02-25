@@ -1513,7 +1513,7 @@ app.post('/booking/reschedule',checkAPI_key,checkAuth,async (req,res) => {
         }
 
         const old_slot = old[0]
-        if (old_slot.slot_id === new_slot_id) {
+        if (Number(old_slot.slot_id) === Number(new_slot_id)) {
             throw new ValidationError('คุณเลื่อนการจองนี้ไปแล้ว ไม่สามารถเลื่อนซ้ำได้')
 
         }
@@ -1592,6 +1592,9 @@ app.post('/booking/reschedule',checkAPI_key,checkAuth,async (req,res) => {
                 )
 
         const [oldUpdate] = await connection.execute(`UPDATE visit_slot SET current_booking = current_booking - 1 WHERE id = ? AND current_booking > 0`,[old_slot.slot_id])
+        if (oldUpdate.affectedRows === 0){
+            throw new ValidationError('พบปัญหาในการคืนคิวเดิม')
+        }
         const [newUpdate] = await connection.execute(`UPDATE visit_slot SET current_booking = current_booking + 1 WHERE id = ? AND current_booking < capacity`,[newSlot.id])
 
         if (newUpdate.affectedRows === 0) {
@@ -1615,7 +1618,7 @@ app.post('/booking/reschedule',checkAPI_key,checkAuth,async (req,res) => {
         return res.status(500).json({message: 'Internal Server Error'})
     }finally{
         if (connection){
-            try { await connection.rollback(); } catch (err) { console.error(err); }
+            try { await connection.release(); } catch (err) { console.error(err); }
         }
     }
 
