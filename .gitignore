@@ -1,2 +1,11 @@
+# ไม่เอาโฟลเดอร์ node_modules ขึ้น Git
+node_modules/
+
+# ไม่เอาไฟล์ .env ขึ้น Git (สำคัญมาก! ป้องกันรหัสผ่าน Database หลุด)
 .env
-uploads
+
+# 🌟 ไม่เอารูปภาพในโฟลเดอร์ uploads ขึ้น Git
+uploads/*
+
+# 🌟 แต่! ให้เก็บโฟลเดอร์ uploads ว่างๆ เอาไว้ (อธิบายด้านล่าง)
+!uploads/.gitkeep
