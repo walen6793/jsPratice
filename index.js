@@ -30,7 +30,7 @@ const fs = require('fs')
 const { request } = require('http')
 
 const corsOptions = {
-    origin: 'http://localhost:5173', // เปลี่ยนเป็น URL ของเว็บ Frontend คุณ (เช่น React/Vue)
+    origin: '*', // เปลี่ยนเป็น URL ของเว็บ Frontend คุณ (เช่น React/Vue)
     methods: ['GET', 'POST', 'PUT', 'DELETE'], // อนุญาต Method อะไรบ้าง
     allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'], // Header ที่ยอมให้ส่งมา
     credentials: true // ถ้ามีการส่ง Cookie หรือ Session ให้เปิดเป็น true
