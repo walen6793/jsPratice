@@ -14,35 +14,267 @@ const moment = require('moment')
 
 const checkAPI_key = require('./middleware/checkAPI_key')
 const checkAuth = require('./middleware/checkAuth')
+const checkAdminAuth = require('./middleware/checkAdminAuth')
+const checkRole = require('./middleware/checkRole')
 const ValidationError = require('./validateErr/AppError')
 const {createMeeting,deleteZoomMeeting} = require('./services/zoomService')
 const { exitCode } = require('process')
 const { count, time } = require('console')
 const { platform } = require('os')
 const port = process.env.PORT || 8000
+const db = require('./config/db')
+const multer = require('multer')
+const path = require('path')
+const sharp = require('sharp')
+const fs = require('fs')
+const { request } = require('http')
 
+const corsOptions = {
+    origin: 'http://localhost:5173', // เปลี่ยนเป็น URL ของเว็บ Frontend คุณ (เช่น React/Vue)
+    methods: ['GET', 'POST', 'PUT', 'DELETE'], // อนุญาต Method อะไรบ้าง
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'], // Header ที่ยอมให้ส่งมา
+    credentials: true // ถ้ามีการส่ง Cookie หรือ Session ให้เปิดเป็น true
+};
 
-
-const initMySQLConnection = async () => {
-    try{
-        const dbUrl = process.env.DATABASE_URL;
-        db = await mysql.createPool(dbUrl)
-        }catch (error){
-            console.error('Error connecting to MySQL:', error)
-            process.exit(1)
-    }
-}
-app.use(cors())
+app.use(cors(corsOptions))
 app.use(express.json()) // อ่านเป็นแบบ JSON
 app.use(checkAPI_key)
 
 
 app.listen(port, async () => {
-    await initMySQLConnection()
+    try{
+    const connection = await db.getConnection()
+    connection.release()
     console.log(`Server is running on port ${port}`)
+    }catch (error){
+        console.error('Error connecting to the database : ',error.message)
+        process.exit(1)
+    }
 })
 
 
+
+const storage = multer.memoryStorage();
+//กรองไฟล์
+const fileFilter = (req,file,cb) => {
+    //เช็คว่า mimetype ของไฟล์ขึ้นต้นด้วย 'image/หรือไม่ 
+    if (file.mimetype.startsWith('image/')){
+        cb(null,true);
+    }else{
+        cb(new ValidationError('กรุณาอัปโหลดไฟล์รูปภาพเท่านั้น',400),false);
+    }
+
+
+};
+
+
+const upload = multer({
+    storage: storage,
+    fileFilter: fileFilter,
+    limit: { fileSize: 10 * 1024 * 1024 }//ล็อคขนาดไฟล์
+});
+
+
+app.post('/user/claim-inmate', checkAPI_key,checkAuth,upload.fields([
+    {name : 'id_card_image',maxCount:1},
+    {name: 'selfie_image',maxCount:1}
+
+]),async(req,res) => {
+    try{
+        const userId = req.user.userId;
+        const {inmate_id, visitor_id_card,} =req.body
+
+        if (!inmate_id || !visitor_id_card){
+            throw new ValidationError("กรุณาระบุ inmate_id และ visitor_id_card",400);
+        }
+        if (!req.files || !req.files['id_card_image'] || !req.files['selfie_image']){
+            throw new ValidationError("กรุณาอัปโหลดรูปภาพบัตรประชาชนและรูปภาพเซลฟี่",400);
+        }
+
+        const processAndSaveImage = async (fileBuffer, fieldName) => {
+            const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+            const filename = `${fieldName}-${uniqueSuffix}.jpg`;
+            const filepath = path.join(__dirname, 'uploads', filename);
+
+            await sharp(fileBuffer)
+                .resize({
+                    width: 1000,
+                    withoutEnlargement: true // แต่ถ้าขนาดน้อยกว่า 1000px จะไม่ต้องขยาย
+                })
+                .jpeg({ quality:70 })
+                .toFile(filepath);
+
+            return filename;
+
+
+        };
+
+        const [idCardFilename, selfieFilename] = await Promise.all([
+            processAndSaveImage(req.files['id_card_image'][0].buffer, 'id_card_image'),
+            processAndSaveImage(req.files['selfie_image'][0].buffer,'selfie_image')
+        ]);
+
+        const [rows] = await db.execute(`
+            SELECT ui.id,ui.userId,ui.status
+            FROM user_inmate_relationship AS ui
+            JOIN incarcerations AS ic ON ui.inmateId = ic.inmate_rowID
+            WHERE ic.inmate_id = ? AND ui.visitor_id_card = ?
+
+            
+            `,[inmate_id,visitor_id_card]);
+        if (rows.length === 0){
+            throw new ValidationError("ไม่พบข้อมูลความสัมพันธ์ระหว่างผู้ใช้และผู้ต้องขังที่ตรงกับข้อมูลที่ให้มา",404);
+        }
+        const relationship = rows[0]
+
+        if (relationship.userId !== null && relationship.userId !== userId){
+            throw new ValidationError("บัตรประชาชนนี้ถูกใช้งานไปแล้ว กรุณาติดต่อเจ้าหน้าที่")
+        }
+        if(relationship.status === 'APPROVED' || relationship.status === 'PENDING'){
+            throw new ValidationError("คุณได้ส่งคำขอไปแล้ว ไม่สามารถส่งซ้ำได้")
+        }
+
+        await db.execute(`
+            UPDATE user_inmate_relationship 
+            SET userId = ?,
+            status = 'PENDING',
+            id_card_image = ?,
+            selfie_image = ?
+            WHERE id = ?
+            `,[userId,idCardFilename,selfieFilename,relationship.id])
+        res.status(200).json({
+
+            message : 'ส่งคำขอสำเร็จ! กรุณารอเจ้าหน้าที่ตรวจสอบรูปภาพหลักฐาน',
+            data : {
+                relationship_id : relationship.id,
+                status : 'PENDING'
+            }
+        })
+
+        
+
+    }catch (error){
+        console.error(error)
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode || 400).json({message: error.message})
+        }
+        return res.status(500).json({message: 'Internal Server Error'})
+    }
+
+});
+
+// app.get('/admin/request/pending',checkAPI_key,checkAdminAuth,checkRole(['SUPER_ADMIN','REGISTRAR']),async(req,res) => {
+//     try{
+//         const page = parseInt(req.query.page) || 1;
+//         const limit = parseInt(req.query.limit) || 10;
+//         const offset = (page - 1)*limit;
+
+//         const [pendingCount] = await db.execute(`SELECT COUNT(id) AS total
+//             FROM user_inmate_relationship
+//             WHERE status = 'PENDING'
+            
+//             `) 
+//         const totalItem = pendingCount[0].total;
+//         const totalPage = Math.ceil(totalItem / limit);
+        
+//         const [rows] = await db.execute(`
+//             SELECT ui.id,u.id_card AS visitor_id_card, p.prefixes_nameTh,u.firstname AS visitor_firstname,u.lastname AS visitor_lastname,
+//             i.firstname AS inmate_firstname, i.lastname AS inmate_lastname,i.gender AS inmate_gender,
+            
+            
+            
+//             `
+
+
+    
+//     console.log("ข้อมูลแอดมินที่เข้าถึง: ", req.admin)
+//     }catch(error){
+//         console.log("Error in Pending : ",error)
+//     }
+// })
+
+
+
+app.put('/admin/request/:id/review',checkAPI_key,checkAdminAuth,checkRole(['SUPER_ADMIN','REGISTRAR']),async(req,res) => {
+    try{
+        
+    
+    const requestId = req.params.id
+    const {action,reject_reason} = req.body;
+
+    if(action !== 'APPROVED' && action !== 'REJECTED'){
+        throw new ValidationError("Action ต้องเป็น APPROVED หรือ REJECTED",400);
+    
+    }
+    if (action === 'REJECTED' && (!reject_reason || reject_reason.trim() === '')){
+        throw new ValidationError("กรุณาระบุเหตุผลการปฏิเสธคำขอ",400);
+    }
+    const [rows] = await db.execute(`
+        SELECT id,status,id_card_image,selfie_image
+        FROM user_inmate_relationship
+        WHERE id = ?
+        
+        
+        `,[requestId]);
+        if (rows.length === 0){
+            return res.status(404).json({message: 'ไม่พบคำขอที่ระบุ'})
+        }
+    const requestInfo = rows[0]
+    if (requestInfo.status !== 'PENDING'){
+        return res.status(400).json({message:'คำขอถูกตรวจสอบไปแล้ว สถานะปัจจุบันคือ ' + requestInfo.status});
+    }
+
+    if (action === 'APPROVED'){
+        await db.execute(`
+            UPDATE user_inmate_relationship
+            SET status = 'APPROVED',reject_reason = NULL
+            WHERE id = ?
+            
+            
+            `,[requestId]);
+    }else if (action === 'REJECTED'){
+        await db.execute(`
+            UPDATE user_inmate_relationship
+            SET status = 'REJECTED',reject_reason = ?
+            WHERE id = ?
+            
+            `,[reject_reason,requestId]);
+
+
+            //สั่งลบรูปภาพ
+            const deleteFileIfExists = (filename) => {
+                if(filename){
+                    const filepath = path.join(__dirname,'uploads',filename)
+                    if (fs.existsSync(filepath)){
+                        fs.unlinkSync(filepath);
+                    }
+                }
+            }
+            deleteFileIfExists(requestInfo.id_card_image);
+            deleteFileIfExists(requestInfo.selfie_image);
+            
+
+
+    }
+    res.status(200).json({
+        message : `ทำรายการสำเร็จ คำขอถูก ${action === 'APPROVED' ? 'อนุมัติ' : 'ปฏิเสธ เนื่องจาก ' + reject_reason}`,
+        data: {
+            id : requestId,
+            status : action
+        }
+    })
+
+
+
+    }catch(error){
+        console.error("Error in review endpoint: ", error)
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode || 400).json({message: error.message})
+
+    }
+    res.status(500).json({message: 'Internal Server Error'})
+    }
+});
 
 
 app.get('/', async(req,res) => {
@@ -356,6 +588,66 @@ app.post('/login', checkAPI_key,async(req,res) => {
         
     }
 })
+
+app.post('/admin/login',checkAPI_key, async(req,res) => {
+
+    try{
+        const {username,password} = req.body
+        if (!username || typeof username != 'string' || !password || typeof password != 'string'){
+            throw new ValidationError("ชื่อผู้ใช้ หรือ รหัสผ่านของคุณไม่ถูกต้อง",400)
+        }
+        const trimmedUsername = username.trim()
+        const trimmedPassword = password.trim()
+        if (trimmedUsername.length === 0 || trimmedPassword.length === 0){
+            throw new ValidationError("ชื่อผู้ใช้ หรือ รหัสผ่านของคุณไม่ถูกต้อง",400)
+        }
+        const [rows] = await db.execute('SELECT id,username,password,fullname,role,is_active FROM officers WHERE username = ?',[trimmedUsername])
+
+        if (rows.length === 0){
+            throw new ValidationError("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง",401)
+        }
+        const data = rows[0]
+        if (data.is_active === 0){
+            console.log('บัญชีนี้โดนระงับการใช้งาน')
+            throw new ValidationError("บัญชีของคุณโดนระงับ",403)
+        }
+        
+        const passwordMatch = await bcrypt.compare(trimmedPassword, data.password)
+        if (!passwordMatch){
+            throw new ValidationError("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง",401)
+        }
+
+        const payload = {
+            userId: data.id,
+            role: data.role
+        }
+
+        const token = jwt.sign(payload,process.env.JWT_SECRET,{expiresIn: '8h'});
+
+        res.status(200).json({
+            message: 'Login successful',
+            token: token,
+            data : {
+                id: data.id,
+                fullname: data.fullname,
+                role: data.role
+            }
+        })
+
+
+
+
+
+    }catch(error){
+        console.log("แอดมิน login error:", error)
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        return res.status(500).json({message:'Internal Server Error'})
+
+    }
+
+});
 
 app.get('/main' , checkAPI_key,checkAuth, async (req,res) => {
 
