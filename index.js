@@ -676,6 +676,216 @@ app.post('/admin/visit-slots/generate-advanced', checkAPI_key, checkAdminAuth, c
     }
 });
 
+// ==========================================
+// 📅 API สำหรับ Admin ดึงรายการรอบการเยี่ยมทั้งหมด (รองรับการ Filter)
+// ==========================================
+app.get('/admin/visit-slots', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+    try {
+        // 1. รับค่าตัวกรองจาก Query String (เช่น ?start_date=2026-03-09&status=OPEN)
+        const { start_date, end_date, status, device_id } = req.query;
+
+        // 2. สร้างเงื่อนไข (WHERE clause) แบบไดนามิก
+        let whereConditions = [];
+        let queryParams = [];
+
+        if (start_date) {
+            whereConditions.push('vs.visit_date >= ?');
+            queryParams.push(start_date);
+        }
+        if (end_date) {
+            whereConditions.push('vs.visit_date <= ?');
+            queryParams.push(end_date);
+        }
+        if (status) {
+            whereConditions.push('vs.status = ?');
+            queryParams.push(status);
+        }
+        if (device_id) {
+            whereConditions.push('vs.device_id = ?');
+            queryParams.push(device_id);
+        }
+
+        // ประกอบร่าง WHERE ถ้ามีเงื่อนไข
+        let whereSQL = '';
+        if (whereConditions.length > 0) {
+            whereSQL = 'WHERE ' + whereConditions.join(' AND ');
+        }
+
+        // 3. 🌟 คำสั่ง SQL สุดเทพ: ดึงข้อมูลจาก visit_slot แล้ว JOIN ไปเอาชื่อจาก devices
+        const sql = `
+            SELECT 
+                vs.id, 
+                vs.visit_date, 
+                vs.starts_at, 
+                vs.ends_at, 
+                vs.capacity, 
+                vs.current_booking, 
+                (vs.capacity - vs.current_booking) AS available_seats, -- 🌟 คำนวณที่ว่างให้ด้วยเลย!
+                vs.status, 
+                vs.allowed_gender,
+                vs.device_id,
+                d.device_name,
+                d.platforms AS platform
+            FROM visit_slot vs
+            LEFT JOIN devices d ON vs.device_id = d.id
+            ${whereSQL}
+            ORDER BY vs.visit_date ASC, vs.starts_at ASC, vs.device_id ASC
+        `;
+
+        const [slots] = await db.execute(sql, queryParams);
+
+        // 4. จัด Format วันที่ให้สวยงามก่อนส่งกลับ
+        const formattedSlots = slots.map(slot => ({
+            ...slot,
+            // แปลงวันที่ให้เป็น YYYY-MM-DD แบบไม่ติด Timezone เพี้ยนๆ
+            visit_date: new Date(slot.visit_date).toLocaleDateString('en-CA')
+        }));
+
+        res.status(200).json({
+            message: "ดึงข้อมูลรอบการเยี่ยมสำเร็จ",
+            total_records: formattedSlots.length,
+            data: formattedSlots
+        });
+
+    } catch (error) {
+        console.error("Get Visit Slots Error:", error);
+        res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลรอบการเยี่ยม" });
+    }
+});
+
+// ==========================================
+// 📋 API สำหรับ Admin ดึงรายชื่อการจองคิวเยี่ยมญาติ
+// ==========================================
+app.get('/admin/visit-bookings', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+    try {
+        // 1. รับค่าตัวกรอง (เอาไว้หาว่าวันนี้มีใครจองบ้าง หรือดูเฉพาะสถานะ PENDING)
+        const { date, slot_id, status, booking_code, inmate_id } = req.query;
+
+        let whereConditions = [];
+        let queryParams = [];
+
+        // กรองตามวันที่เยี่ยม (ใช้บ่อยสุด แอดมินใช้ดูคิวของแต่ละวัน)
+        if (date) {
+            whereConditions.push('vs.visit_date = ?');
+            queryParams.push(date);
+        }
+        // กรองตามรหัสรอบ (เอาไว้กดดูเจาะจงทีละรอบ)
+        if (slot_id) {
+            whereConditions.push('vb.slot_id = ?');
+            queryParams.push(slot_id);
+        }
+        // กรองสถานะใบจอง (เช่น PENDING, APPROVED, COMPLETED)
+        if (status) {
+            whereConditions.push('vb.status = ?');
+            queryParams.push(status);
+        }
+        // ค้นหาด้วยรหัสใบจอง (ตอนญาติถือใบจองมายื่นหน้าเคาน์เตอร์)
+        if (booking_code) {
+            whereConditions.push('vb.booking_code = ?');
+            queryParams.push(booking_code);
+        }
+        // ดูประวัติการโดนเยี่ยมของนักโทษ
+        if (inmate_id) {
+            whereConditions.push('vb.inmate_id = ?');
+            queryParams.push(inmate_id);
+        }
+
+        let whereSQL = '';
+        if (whereConditions.length > 0) {
+            whereSQL = 'WHERE ' + whereConditions.join(' AND ');
+        }
+
+        // 2. 🌟 SQL รวบรวมข้อมูลระดับจักรวาล (JOIN 5 ตาราง)
+        // ⚠️ หมายเหตุ: ตาราง u (users/ญาติ) และ i (inmates/นักโทษ) ให้ปรับชื่อคอลัมน์ตามฐานข้อมูลจริงของคุณนะครับ
+        const sql = `
+            SELECT 
+                vb.id AS booking_id,
+                vb.booking_code,
+                vb.status AS booking_status,
+                vb.created_at AS booked_on,
+                vb.meeting_id,
+                vb.join_url,
+                vs.visit_date,
+                vs.starts_at,
+                vs.ends_at,
+                d.device_name,
+                d.platforms AS platform,
+                u.userId AS relative_id,
+                CONCAT(u.firstname, ' ', u.lastname) AS relative_fullname, -- 🌟 ดึงชื่อญาติ
+                i.id AS inmate_id,
+                ic.inmate_id AS inmate_number,
+                CONCAT(i.firstname, ' ', i.lastname) AS inmate_fullname -- 🌟 ดึงชื่อนักโทษ
+            FROM visit_booking vb
+            JOIN visit_slot vs ON vb.slot_id = vs.id
+            
+            LEFT JOIN devices d ON vs.device_id = d.id
+            LEFT JOIN user u ON vb.relative_user_id = u.userId      -- ⚠️ เช็คชื่อตารางญาติของคุณ
+            LEFT JOIN inmate i ON vb.inmate_id = i.id         -- ⚠️ เช็คชื่อตารางนักโทษของคุณ
+            JOIN incarcerations ic ON i.id = ic.inmate_rowID
+            
+            ${whereSQL}
+            ORDER BY vs.visit_date ASC, vs.starts_at ASC, vb.created_at ASC
+        `;
+
+        const [bookings] = await db.execute(sql, queryParams);
+
+        // 3. จัด Format วันที่ให้สวยงาม
+        const formattedBookings = bookings.map(b => ({
+            ...b,
+            visit_date: new Date(b.visit_date).toLocaleDateString('en-CA'),
+            booked_on: new Date(b.booked_on).toLocaleString('th-TH') // โชว์วันเวลาที่กดจอง
+        }));
+
+        res.status(200).json({
+            message: "ดึงข้อมูลการจองสำเร็จ",
+            total_records: formattedBookings.length,
+            data: formattedBookings
+        });
+
+    } catch (error) {
+        console.error("Get Visit Bookings Error:", error);
+        res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลการจอง" });
+    }
+});
+
+
+
+app.get('/admin/inmates', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+    try {
+        const { search } = req.query; // รับคำค้นหา เช่น ?search=สมชาย หรือ ?search=67001
+        
+        let sql = `
+            SELECT 
+                i.id, 
+                i.firstname, 
+                i.lastname, 
+                ic.inmate_id AS prisoner_number
+            FROM inmate i
+            LEFT JOIN incarcerations ic ON i.id = ic.inmate_rowID
+        `;
+        let queryParams = [];
+
+        // ถ้ามีการพิมพ์ค้นหามา
+        if (search) {
+            sql += ` WHERE i.firstname LIKE ? OR i.lastname LIKE ? OR ic.inmate_id LIKE ?`;
+            const searchKeyword = `%${search}%`;
+            queryParams.push(searchKeyword, searchKeyword, searchKeyword);
+        }
+
+        sql += ` ORDER BY i.id DESC LIMIT 100`; // ลิมิตไว้ 100 คนป้องกันดึงข้อมูลหนักเกินไป
+
+        const [inmates] = await db.execute(sql, queryParams);
+
+        res.status(200).json({
+            message: "ดึงข้อมูลนักโทษสำเร็จ",
+            total: inmates.length,
+            data: inmates
+        });
+    } catch (error) {
+        console.error("Get Inmates Error:", error);
+        res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลนักโทษ" });
+    }
+});
 
 
 app.get('/', async(req,res) => {
