@@ -154,7 +154,7 @@ app.post('/user/claim-inmate', checkAPI_key,checkAuth,upload.fields([
         const processAndSaveImage = async (fileBuffer, fieldName) => {
             const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
             const filename = `${fieldName}-${uniqueSuffix}.jpg`;
-            const filepath = path.join(__dirname, 'uploads', filename);
+            const filepath = path.join(process.cwd(), 'uploads', filename);
             console.log("🕵️‍♂️ ตำแหน่งไฟล์รูปที่แท้จริงคือ: ", filepath);
 
             await sharp(fileBuffer)
@@ -182,7 +182,7 @@ app.post('/user/claim-inmate', checkAPI_key,checkAuth,upload.fields([
 
             const deleteOldFile = (filename) => {
                 if(filename) {
-                    const filePath = path.join(__dirname,'uploads',filename);
+                    const filePath = path.join(process.cwd(),'uploads',filename);
                     
                     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
@@ -331,7 +331,7 @@ app.put('/admin/request/:id/review',checkAPI_key,checkAdminAuth,checkRole(['SUPE
             //สั่งลบรูปภาพ
             const deleteFileIfExists = (filename) => {
                 if(filename){
-                    const filepath = path.join(__dirname,'uploads',filename)
+                    const filepath = path.join(process.cwd(),'uploads',filename)
                     if (fs.existsSync(filepath)){
                         fs.unlinkSync(filepath);
                     }
@@ -1523,7 +1523,7 @@ app.get('/admin/request/image/:filename', checkAPI_key, checkAdminAuth, checkRol
         const safeFilename = path.basename(filename); 
         
         // 3. สร้างพาร์ทเต็มๆ ชี้ไปที่โฟลเดอร์ uploads
-        const filePath = path.join(__dirname, 'uploads', safeFilename);
+        const filePath = path.join(process.cwd(), 'uploads', safeFilename);
 
         // 4. เช็คว่ามีไฟล์นี้อยู่จริงๆ ไหม?
         if (!fs.existsSync(filePath)) {
