@@ -737,6 +737,8 @@ app.get('/admin/visit-slots', checkAPI_key, checkAdminAuth, checkRole(['SUPER_AD
         // 4. จัด Format วันที่ให้สวยงามก่อนส่งกลับ
         const formattedSlots = slots.map(slot => ({
             ...slot,
+            status : slot.available_seats < 1 ? 'FULL' : slot.status,
+            
             // แปลงวันที่ให้เป็น YYYY-MM-DD แบบไม่ติด Timezone เพี้ยนๆ
             visit_date: new Date(slot.visit_date).toLocaleDateString('en-CA')
         }));
@@ -887,6 +889,47 @@ app.get('/admin/inmates', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN'
     }
 });
 
+// ==========================================
+// 2. ➕ API เพิ่มข้อมูลนักโทษใหม่ (รายบุคคล)
+// ==========================================
+app.post('/admin/inmates', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+    const connection = await db.getConnection();
+    await connection.beginTransaction(); // ใช้ Transaction เผื่อพังกลางทาง
+
+    try {
+        const { id_card,prefix,firstname, lastname, gender,inmate_number } = req.body;
+
+        if (!firstname || !lastname || !inmate_number) {
+            return res.status(400).json({ message: "กรุณากรอก ชื่อ, นามสกุล และ รหัสนักโทษ ให้ครบถ้วน" });
+        }
+
+        // 1. บันทึกลงตาราง inmate ก่อน
+        const [inmateResult] = await connection.execute(
+            `INSERT INTO inmate (id_card,prefixeID,firstname, lastname,allow_visit,gender) VALUES (?, ?, ?, ?, ?, ?)`,
+            [id_card,prefix,firstname, lastname,'1',gender]
+        );
+        const newInmateId = inmateResult.insertId;
+
+        // 2. บันทึกรหัสนักโทษลงตาราง incarcerations
+        await connection.execute(
+            `INSERT INTO incarcerations (inmate_rowID, inmate_id,) VALUES (?, ?)`,
+            [newInmateId, inmate_number]
+        );
+
+        await connection.commit();
+        connection.release();
+
+        res.status(201).json({
+            message: "เพิ่มข้อมูลนักโทษสำเร็จ",
+            data: { id: newInmateId, firstname, lastname, inmate_number }
+        });
+    } catch (error) {
+        await connection.rollback();
+        connection.release();
+        console.error("Create Inmate Error:", error);
+        res.status(500).json({ message: "เกิดข้อผิดพลาดในการเพิ่มข้อมูลนักโทษ" });
+    }
+});
 
 app.get('/', async(req,res) => {
     
