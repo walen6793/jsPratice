@@ -866,7 +866,14 @@ app.get('/admin/inmates', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN'
                 i.lastname, 
                 ic.inmate_id AS prisoner_number
             FROM inmate i
-            LEFT JOIN incarcerations ic ON i.id = ic.inmate_rowID
+            -- 1. หากล่องข้อมูลล่าสุดของนักโทษแต่ละคนก่อน
+            LEFT JOIN (
+                SELECT inmate_rowID, MAX(id) AS latest_id
+                FROM incarcerations
+                GROUP BY inmate_rowID
+            ) latest_record ON i.id = latest_record.inmate_rowID
+            -- 2. เอาไอดีล่าสุดนั้น ไปดึงรหัสนักโทษ (inmate_id) ตัวจริงออกมา
+            LEFT JOIN incarcerations ic ON latest_record.latest_id = ic.id
         `;
         let queryParams = [];
 
@@ -880,6 +887,7 @@ app.get('/admin/inmates', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN'
         sql += ` ORDER BY i.id DESC LIMIT 100`; // ลิมิตไว้ 100 คนป้องกันดึงข้อมูลหนักเกินไป
 
         const [inmates] = await db.execute(sql, queryParams);
+
 
         res.status(200).json({
             message: "ดึงข้อมูลนักโทษสำเร็จ",
@@ -1138,7 +1146,55 @@ app.delete('/admin/inmates/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER
     }
 });
 
+// ==========================================
+// ✏️ API แก้ไขรอบเวลา (Visit Slot)
+// ==========================================
+app.put('/admin/visit-slots/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+    try {
+        const slotId = req.params.id;
+        const { visit_date, starts_at, ends_at, capacity, allowed_gender, device_id, status } = req.body;
 
+        // 1. ดึงข้อมูลรอบเดิมมาเช็คก่อน
+        const [existingSlot] = await db.execute(`SELECT current_booking FROM visit_slot WHERE id = ?`, [slotId]);
+        
+        if (existingSlot.length === 0) {
+            return res.status(404).json({ message: "ไม่พบรอบเวลานี้ในระบบ" });
+        }
+
+        const currentBooking = existingSlot[0].current_booking;
+
+        // 2. 🚨 ดักบั๊กที่ 1: ห้ามลด Capacity (ที่นั่งทั้งหมด) ต่ำกว่าคนที่จองไปแล้ว
+        if (capacity < currentBooking) {
+            return res.status(400).json({ 
+                message: `ไม่สามารถลดจำนวนที่นั่งได้! รอบนี้มีคนจองไปแล้ว ${currentBooking} ที่นั่ง (กำหนดที่นั่งขั้นต่ำได้คือ ${currentBooking})` 
+            });
+        }
+
+        // 3. 🚨 ดักบั๊กที่ 2: เช็คว่าวัน/เวลา/ตู้ ที่แก้ไปใหม่ ไปชนกับรอบอื่นที่เปิดไว้แล้วไหม?
+        // (ใส่ id != ? เพื่อบอกว่า ไม่ต้องเอาตัวมันเองมาเทียบ)
+        const [duplicateCheck] = await db.execute(`
+            SELECT id FROM visit_slot 
+            WHERE visit_date = ? AND starts_at = ? AND device_id = ? AND id != ?
+        `, [visit_date, starts_at, device_id || null, slotId]);
+
+        if (duplicateCheck.length > 0) {
+            return res.status(400).json({ message: "ไม่สามารถแก้ไขได้! วันและเวลานี้ของตู้ที่เลือก มีการเปิดรอบไว้แล้ว (คิวชนกัน)" });
+        }
+
+        // 4. อัปเดตข้อมูลลงฐานข้อมูล
+        await db.execute(`
+            UPDATE visit_slot 
+            SET visit_date = ?, starts_at = ?, ends_at = ?, capacity = ?, allowed_gender = ?, device_id = ?, status = ?
+            WHERE id = ?
+        `, [visit_date, starts_at, ends_at, capacity, allowed_gender || null, device_id || null, status, slotId]);
+
+        res.status(200).json({ message: "แก้ไขรอบเวลาสำเร็จ" });
+
+    } catch (error) {
+        console.error("Update Visit Slot Error:", error);
+        res.status(500).json({ message: "เกิดข้อผิดพลาดในการแก้ไขรอบเวลา" });
+    }
+});
 
 app.get('/', async(req,res) => {
     
