@@ -504,6 +504,23 @@ app.post('/admin/inmate/excel',checkAPI_key,checkAdminAuth, checkRole(['SUPER_AD
 // ==========================================
 // 📅 API สำหรับ Admin สร้างรอบ (เพิ่มการรองรับ device_id)
 // ==========================================
+app.get('/admin/devices', checkAPI_key, checkAdminAuth, async (req, res) => {
+    try {
+        // ดึงอุปกรณ์ทั้งหมดมาโชว์ (ถ้าตารางคุณมีสถานะ เปิด/ปิด ใช้งาน ก็ใส่ WHERE เพิ่มได้ครับ)
+        const [devices] = await db.execute(`SELECT id, device_name, platforms FROM devices`);
+        
+        res.status(200).json({
+            message: "ดึงข้อมูลอุปกรณ์สำเร็จ",
+            data: devices
+        });
+
+    } catch (error) {
+        console.error("Get Devices Error:", error);
+        res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลอุปกรณ์" });
+    }
+});
+
+
 app.post('/admin/visit-slots/generate-advanced', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
     try {
         const { schedules, is_preview = false } = req.body; 
@@ -583,27 +600,28 @@ app.post('/admin/visit-slots/generate-advanced', checkAPI_key, checkAdminAuth, c
                 const ends_at = `${slotEndH}:${slotEndM}:00`;
 
                 // 🌟 2. เพิ่ม device_id เข้าไปใน Array ที่จะ Insert
-                slotsToInsert.push([
-                    date, 
-                    starts_at, 
-                    ends_at, 
-                    capacity, 
-                    0, 
-                    'OPEN', 
-                    allowed_gender || null,
-                    device_id || null // ใส่ null เผื่อเป็นรอบเยี่ยมแบบไม่ระบุอุปกรณ์
-                ]);
+                
+
+                const slotKey = `${date}_${starts_at}_${device_id || 'NULL'}`;
+
+                // 🌟 ตรวจสอบว่า "รหัสลับนี้มีอยู่แล้วใน DB" หรือ "ซ้ำกับรอบที่เพิ่งสร้างในลูปนี้" หรือไม่?
+                const isDuplicate = existingSlotsSet.has(slotKey) || newSlotsSet.has(slotKey);
+
+                if (!isDuplicate) {
+                    // ✅ ถ้าไม่ซ้ำ ให้เก็บเตรียม Insert และจดจำไว้ในตะกร้า newSlotsSet
+                    slotsToInsert.push([
+                        date, starts_at, ends_at, capacity, 0, 'OPEN', allowed_gender || null, device_id || null
+                    ]);
+                    newSlotsSet.add(slotKey);
+                }
+
                 let readableDeviceName = 'ไม่ระบุอุปกรณ์';
                 let readablePlatform = 'ไม่ระบุ';
-
-                if (device_id) {
-                    const deviceInfo = deviceMap[device_id];
-                    if (deviceInfo) {
-                        readableDeviceName = deviceInfo.name;
-                        readablePlatform = deviceInfo.platform;
-                    } else {
-                        readableDeviceName = `อุปกรณ์ ID: ${device_id}`;
-                    }
+                if (device_id && deviceMap[device_id]) {
+                    readableDeviceName = deviceMap[device_id].name;
+                    readablePlatform = deviceMap[device_id].platform;
+                } else if (device_id) {
+                    readableDeviceName = `อุปกรณ์ ID: ${device_id}`;
                 }
                 // 🌟 3. เพิ่มลงในตัวพรีวิวให้แอดมินเช็คด้วย
                 previewList.push({
@@ -611,9 +629,10 @@ app.post('/admin/visit-slots/generate-advanced', checkAPI_key, checkAdminAuth, c
                     start_time: starts_at,
                     end_time: ends_at,
                     capacity: capacity,
-                    device_name: readableDeviceName, // 🌟 โชว์ชื่อ
-                    platform: readablePlatform,      // 🌟 โชว์แพลตฟอร์ม (เช่น Zoom, Webex)
-                    allowed_gender: allowed_gender || 'รับรวมชาย-หญิง'
+                    device_name: readableDeviceName,
+                    platform: readablePlatform,
+                    allowed_gender: allowed_gender || 'รับรวมชาย-หญิง',
+                    status: isDuplicate ? 'DUPLICATE (ข้ามการสร้าง)' : 'NEW (พร้อมสร้าง)' // 🌟 บอกแอดมินชัดๆ!
                 });
 
                 currentTotalMinutes += duration_minutes + (break_minutes || 0);
@@ -621,7 +640,9 @@ app.post('/admin/visit-slots/generate-advanced', checkAPI_key, checkAdminAuth, c
         }
 
         if (slotsToInsert.length === 0) {
-            return res.status(400).json({ message: "ไม่สามารถสร้างรอบเวลาได้ กรุณาตรวจสอบข้อมูลที่ส่งมา" });
+            return res.status(400).json({ 
+                message: "รอบเวลาที่คุณต้องการสร้าง มีอยู่ในระบบทั้งหมดแล้ว (ไม่มีการสร้างใหม่)" 
+            });
         }
 
         if (is_preview === true) {
