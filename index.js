@@ -10,7 +10,7 @@ const dotenv = require('dotenv').config();
 const cors = require('cors')
 const jwt = require('jsonwebtoken')
 const moment = require('moment')
-
+const xlsx = require('xlsx');
 
 const checkAPI_key = require('./middleware/checkAPI_key')
 const checkAuth = require('./middleware/checkAuth')
@@ -19,7 +19,7 @@ const checkRole = require('./middleware/checkRole')
 const ValidationError = require('./validateErr/AppError')
 const {createMeeting,deleteZoomMeeting} = require('./services/zoomService')
 const { exitCode } = require('process')
-const { count, time } = require('console')
+const { count, time, error } = require('console')
 const { platform } = require('os')
 const port = process.env.PORT || 8000
 const db = require('./config/db')
@@ -72,6 +72,24 @@ const upload = multer({
     storage: storage,
     fileFilter: fileFilter,
     limit: { fileSize: 10 * 1024 * 1024 }//ล็อคขนาดไฟล์
+});
+
+const excelUpload = multer({
+    storage: multer.memoryStorage(),
+    fileFilter: (req, file, cb) => {
+        // อนุญาตเฉพาะไฟล์ .xlsx, .xls และ .csv
+        const allowedMimeTypes = [
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+            'application/vnd.ms-excel', // .xls
+            'text/csv' // .csv
+        ];
+        
+        if (allowedMimeTypes.includes(file.mimetype)) {
+            cb(null, true); // ปล่อยผ่าน
+        } else {
+            cb(new Error('กรุณาอัปโหลดไฟล์ Excel (.xlsx, .xls) หรือ CSV เท่านั้น')); // เตะออกถ้าไม่ใช่
+        }
+    }
 });
 
 
@@ -341,6 +359,302 @@ app.put('/admin/request/:id/review',checkAPI_key,checkAdminAuth,checkRole(['SUPE
     res.status(500).json({message: 'Internal Server Error'})
     }
 });
+
+app.post('/admin/inmate/excel',checkAPI_key,checkAdminAuth, checkRole(['SUPER_ADMIN','REGISTRAR']),excelUpload.single('file'),async (req,res) => {
+    let connection;
+    try{
+        if (!req.file){
+            return res.status(400).json({message:'กรุณาอัปโหลดไฟล์ Excel หรือ Csv'});
+
+        }
+
+    
+    const workbook = xlsx.read(req.file.buffer, { type : 'buffer'});
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+
+    const data = xlsx.utils.sheet_to_json(sheet);//แปลงหัวคอลลัมเป็น key array
+
+    if(data.length === 0){
+        return res.status(400).json({message: 'ไม่พบข้อมูลในไฟล์หรือไฟล์ว่างเปล่า'})
+    }
+
+    let successCount = 0;
+    let updateCount = 0;
+    let errorList = [];
+
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+    const [zoneRows] = await connection.execute(`SELECT id, location_name FROM inmate_location`);
+
+    const zoneMap ={};
+    zoneRows.forEach(zone => {
+        // ใช้ .trim() เพื่อตัดช่องว่างหน้า-หลัง เผื่อใน DB พิมพ์เว้นวรรคเกิน
+        const cleanZoneName = zone.location_name.toString().trim();
+        
+        // จับคู่ ตัวหนังสือ = ID
+        zoneMap[cleanZoneName] = zone.id; 
+    });
+
+    for (let i = 0;i < data.length ; i++){
+        const row = data[i];
+
+        const inmate_id_card = row['เลขบัตรประจำตัวประชาชน'] || row['id_card']
+        const inmate_id = row['รหัส'] || row['inmate_id']
+        const firstname = row['ชื่อ'] || row['firstname']
+        const lastname = row['นามสกุล'] || row['lastname']
+        let RawZoneText = row['แดน'] || row['zone']
+        const zoneText = RawZoneText ? RawZoneText.toString().trim() : null;
+        let finalZoneId = null;
+        const admission_date = row['วันรับโทษ'] || row['admission_date'] || null
+        const release_date = row['วันพ้นโทษ'] || row['release_date'] || null
+        const gender = row['เพศ']|| row['gender']
+
+        if (!inmate_id_card||!inmate_id || !firstname || !lastname){
+            errorList.push(`แถวที่ Excel ${ i + 2 } : ข้อมูลไม่ครบ (ขาดเลขบัตรประชาชน รหัสนักโทษ หรือ ชื่อ-นามสกุล)`);
+            continue;
+        }
+
+        let realInmateId;
+
+        if (zoneText) {
+            finalZoneId = zoneMap[zoneText]; // โยนคำว่า "แดน 1" เข้าไป มันจะคายเลข 1 ออกมา
+
+            // 🚨 เช็คว่า "ถ้าหา ID ไม่เจอ (แปลว่าแอดมินพิมพ์ชื่อแดนผิด หรือไม่มีแดนนี้ในระบบ)"
+            if (!finalZoneId) {
+                errorList.push(`แถวที่ ${i + 2}: ไม่พบข้อมูลแดนที่ชื่อ "${zoneText}" ในระบบ กรุณาตรวจสอบการสะกดคำ`);
+                continue; // ข้ามการบันทึกนักโทษคนนี้ไปเลย (เพื่อไม่ให้ระบบพัง)
+            }
+        }
+
+        const [inmateRows] = await connection.execute(`
+            SELECT id FROM inmate WHERE id_card = ?
+            
+            
+            `,[inmate_id_card])
+
+        if(inmateRows.length > 0){
+            realInmateId = inmateRows[0].id
+        }else{
+            const [insertInmate] = await connection.execute(`
+                INSERT INTO inmate (id_card,firstname,lastname,gender) VALUES (?,?,?,?)
+                
+                `,[inmate_id_card,firstname,lastname,gender])
+            realInmateId = insertInmate.insertId
+        }
+
+        
+
+        const [incarcerationRows] = await connection.execute(`
+            SELECT inmate_rowID FROM incarcerations WHERE inmate_id = ?
+            
+            `,[inmate_id]);
+
+
+            //ถ้ามีรหัสนี้อยู่แล้ว
+        if(incarcerationRows.length > 0) {
+            await connection.execute(`
+                UPDATE incarcerations SET current_location_id = ? WHERE inmate_id = ?
+                
+                `,[finalZoneId, inmate_id]);
+
+            updateCount++;
+
+
+
+
+        }else{
+
+            //ถ้าไม่มี
+            await connection.execute(`
+                INSERT INTO incarcerations (inmate_rowID,inmate_id,admission_date,release_date,current_location_id)
+                VALUES (?,?,?,?,?)
+                `,[realInmateId,inmate_id,admission_date,release_date,finalZoneId])
+                successCount++;
+        }
+
+    }
+    await connection.commit();
+    res.status(200).json({
+        message:'ประมวลไฟล์ Excel',
+        summary: {
+            total_rows :data.length,
+            inserted: successCount,
+            updated: updateCount,
+            failed: errorList.length,
+            errors: errorList
+    }
+    })
+
+
+    }catch(error){
+        if (connection) await  connection.rollback();
+        console.error(error)
+        res.status(500).json({ message : 'เกิดข้อผิดพลาดในการประมวลผลไฟล์'})
+
+    }finally {
+        if (connection) connection.release(); 
+    }
+
+
+})
+
+
+
+// ==========================================
+// 📅 API สำหรับ Admin สร้างรอบ (เพิ่มการรองรับ device_id)
+// ==========================================
+app.post('/admin/visit-slots/generate-advanced', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+    try {
+        const { schedules, is_preview = false } = req.body; 
+
+        if (!schedules || !Array.isArray(schedules) || schedules.length === 0) {
+            return res.status(400).json({ message: "กรุณาส่งข้อมูลตารางเวลาอย่างน้อย 1 รายการ" });
+        }
+
+        const slotsToInsert = [];
+        const previewList = []; 
+
+        const [deviceRows] = await db.execute(`SELECT id, device_name,platforms FROM devices`);
+        
+        const deviceMap = {};
+        deviceRows.forEach(device => {
+            // จับคู่ ID กับ Object ที่เก็บทั้งชื่อและแพลตฟอร์ม
+            deviceMap[device.id] = {
+                name: device.device_name,
+                platform: device.platforms
+            }; 
+        });
+
+
+        const uniqueDates = [...new Set(schedules.map(s => s.date))];
+        const existingSlotsSet = new Set(); // ตะกร้าเก็บรอบที่เคยสร้างไปแล้ว
+
+
+        if (uniqueDates.length > 0) {
+            // สร้างเครื่องหมาย ? ตามจำนวนวันที่ เพื่อใช้ในคำสั่ง IN (?, ?, ...)
+            const placeholders = uniqueDates.map(() => '?').join(',');
+            
+            // ดึงรอบที่มีอยู่แล้วใน DB ออกมา
+            const [existingRows] = await db.query(
+                `SELECT visit_date, starts_at, device_id FROM visit_slot WHERE visit_date IN (${placeholders})`,
+                uniqueDates
+            );
+
+            // เอามาแปลงเป็น Key รหัสลับ เช่น "2026-03-09_09:00:00_1" (วันที่_เวลา_อุปกรณ์)
+            existingRows.forEach(row => {
+                // เคลียร์ Format วันที่ให้เป็น YYYY-MM-DD เพื่อให้เทียบกันได้เป๊ะๆ
+                const d = new Date(row.visit_date);
+                const dStr = d.toLocaleDateString('en-CA'); // จะได้ Format YYYY-MM-DD
+                const devId = row.device_id || 'NULL';
+                
+                existingSlotsSet.add(`${dStr}_${row.starts_at}_${devId}`);
+            });
+        }
+        
+        // ตะกร้าเก็บรอบใหม่ที่กำลังจะสร้าง (กันแอดมินส่งข้อมูลซ้ำมาใน Request เดียวกันเอง)
+        const newSlotsSet = new Set();
+
+
+
+        for (let i = 0; i < schedules.length; i++) {
+            const config = schedules[i];
+            
+            // 🌟 1. รับค่า device_id เพิ่มเข้ามาตรงนี้ครับ
+            const { date, start_time, end_time, duration_minutes, break_minutes, capacity, allowed_gender, device_id } = config;
+
+            if (!date || !start_time || !end_time || !duration_minutes || !capacity) continue; 
+
+            let [currentHour, currentMinute] = start_time.split(':').map(Number);
+            const [endHour, endMinute] = end_time.split(':').map(Number);
+            
+            let currentTotalMinutes = (currentHour * 60) + currentMinute;
+            const totalEndMinutes = (endHour * 60) + endMinute;
+
+            while (currentTotalMinutes + duration_minutes <= totalEndMinutes) {
+                
+                const slotStartH = Math.floor(currentTotalMinutes / 60).toString().padStart(2, '0');
+                const slotStartM = (currentTotalMinutes % 60).toString().padStart(2, '0');
+                const starts_at = `${slotStartH}:${slotStartM}:00`;
+
+                const slotEndTotal = currentTotalMinutes + duration_minutes;
+                const slotEndH = Math.floor(slotEndTotal / 60).toString().padStart(2, '0');
+                const slotEndM = (slotEndTotal % 60).toString().padStart(2, '0');
+                const ends_at = `${slotEndH}:${slotEndM}:00`;
+
+                // 🌟 2. เพิ่ม device_id เข้าไปใน Array ที่จะ Insert
+                slotsToInsert.push([
+                    date, 
+                    starts_at, 
+                    ends_at, 
+                    capacity, 
+                    0, 
+                    'OPEN', 
+                    allowed_gender || null,
+                    device_id || null // ใส่ null เผื่อเป็นรอบเยี่ยมแบบไม่ระบุอุปกรณ์
+                ]);
+                let readableDeviceName = 'ไม่ระบุอุปกรณ์';
+                let readablePlatform = 'ไม่ระบุ';
+
+                if (device_id) {
+                    const deviceInfo = deviceMap[device_id];
+                    if (deviceInfo) {
+                        readableDeviceName = deviceInfo.name;
+                        readablePlatform = deviceInfo.platform;
+                    } else {
+                        readableDeviceName = `อุปกรณ์ ID: ${device_id}`;
+                    }
+                }
+                // 🌟 3. เพิ่มลงในตัวพรีวิวให้แอดมินเช็คด้วย
+                previewList.push({
+                    date: date,
+                    start_time: starts_at,
+                    end_time: ends_at,
+                    capacity: capacity,
+                    device_name: readableDeviceName, // 🌟 โชว์ชื่อ
+                    platform: readablePlatform,      // 🌟 โชว์แพลตฟอร์ม (เช่น Zoom, Webex)
+                    allowed_gender: allowed_gender || 'รับรวมชาย-หญิง'
+                });
+
+                currentTotalMinutes += duration_minutes + (break_minutes || 0);
+            }
+        }
+
+        if (slotsToInsert.length === 0) {
+            return res.status(400).json({ message: "ไม่สามารถสร้างรอบเวลาได้ กรุณาตรวจสอบข้อมูลที่ส่งมา" });
+        }
+
+        if (is_preview === true) {
+            return res.status(200).json({
+                message: "แสดงตัวอย่างรอบการจอง (ยังไม่บันทึก)",
+                summary: { total_slots_generated: previewList.length },
+                preview_data: previewList 
+            });
+        }
+
+        // 🌟 4. แก้คำสั่ง SQL ให้มีช่อง device_id ด้วย
+        const sql = `
+            INSERT INTO visit_slot 
+            (visit_date, starts_at, ends_at, capacity, current_booking, status, allowed_gender, device_id) 
+            VALUES ?
+        `;
+        
+        const [result] = await db.query(sql, [slotsToInsert]);
+
+        res.status(201).json({
+            message: "สร้างรอบการจองแบบกำหนดเวลาเองสำเร็จ",
+            summary: {
+                total_configs_processed: schedules.length,
+                total_slots_created: result.affectedRows
+            }
+        });
+
+    } catch (error) {
+        console.error("Generate Advanced Slots Error:", error);
+        res.status(500).json({ message: "เกิดข้อผิดพลาดในการสร้างรอบการจอง" });
+    }
+});
+
 
 
 app.get('/', async(req,res) => {
