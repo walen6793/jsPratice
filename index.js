@@ -139,6 +139,7 @@ app.post('/user/claim-inmate', checkAPI_key,checkAuth,upload.fields([
                 throw new ValidationError("บัตรประชาชนนี้ถูกใช้งานโดยบัญชีอื่นไปแล้ว กรุณาติดต่อเจ้าหน้าที่", 400);
             }
             if (relationship.status === 'APPROVED' || relationship.status === 'PENDING') {
+                console.log("rela : ",relationship.id)
                 throw new ValidationError("คุณได้ส่งคำขอไปแล้ว หรือสถานะได้รับการอนุมัติแล้ว ไม่สามารถส่งซ้ำได้", 400);
             }
             relationshipId = relationship.id;
