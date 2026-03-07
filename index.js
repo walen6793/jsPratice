@@ -154,6 +154,7 @@ app.post('/user/claim-inmate', checkAPI_key,checkAuth,upload.fields([
             const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
             const filename = `${fieldName}-${uniqueSuffix}.jpg`;
             const filepath = path.join(__dirname, 'uploads', filename);
+            console.log("🕵️‍♂️ ตำแหน่งไฟล์รูปที่แท้จริงคือ: ", filepath);
 
             await sharp(fileBuffer)
                 .resize({ width: 1000, withoutEnlargement: true })
@@ -181,6 +182,7 @@ app.post('/user/claim-inmate', checkAPI_key,checkAuth,upload.fields([
             const deleteOldFile = (filename) => {
                 if(filename) {
                     const filePath = path.join(__dirname,'uploads',filename);
+                    
                     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
                 }
@@ -897,39 +899,245 @@ app.post('/admin/inmates', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN
     await connection.beginTransaction(); // ใช้ Transaction เผื่อพังกลางทาง
 
     try {
-        const { id_card,prefix,firstname, lastname, gender,inmate_number } = req.body;
+        const { id_card,prefix,firstname, lastname, gender,inmate_number,zoneText } = req.body;
 
         if (!firstname || !lastname || !inmate_number) {
             return res.status(400).json({ message: "กรุณากรอก ชื่อ, นามสกุล และ รหัสนักโทษ ให้ครบถ้วน" });
         }
+        if (id_card.length != 13){
+            return res.status(400).json({ message: "กรุณากรอกเลขบัตรประชาชนให้ครบ 13 หลัก"})
+        }
+
+        const [zoneRows] = await connection.execute(`SELECT id, location_name FROM inmate_location`);
+        const zoneMap ={};
+        zoneRows.forEach(zone => {
+            // ใช้ .trim() เพื่อตัดช่องว่างหน้า-หลัง เผื่อใน DB พิมพ์เว้นวรรคเกิน
+            const cleanZoneName = zone.location_name.toString().trim();
+            
+            // จับคู่ ตัวหนังสือ = ID
+            zoneMap[cleanZoneName] = zone.id; 
+        });
+
+
+        const [prefixRows] = await connection.execute(`SELECT id_prefixes, prefixes_nameTh FROM prefixes`);
+        const prefixMap ={};
+        prefixRows.forEach(item => {
+            // ใช้ .trim() เพื่อตัดช่องว่างหน้า-หลัง เผื่อใน DB พิมพ์เว้นวรรคเกิน
+            const cleanPrefixName = item.prefixes_nameTh.toString().trim();
+            
+            // จับคู่ ตัวหนังสือ = ID
+            prefixMap[cleanPrefixName] = item.id_prefixes; 
+        });
+
+        let finalPrefixId = null;
+        if (prefix) {
+            finalPrefixId = prefixMap[prefix]; // โยนคำว่า "แดน 1" เข้าไป มันจะคายเลข 1 ออกมา
+
+            // 🚨 เช็คว่า "ถ้าหา ID ไม่เจอ (แปลว่าแอดมินพิมพ์ชื่อแดนผิด หรือไม่มีแดนนี้ในระบบ)"
+            if (!finalPrefixId) {
+                finalPrefixId = null;
+            }
+        }
+        let real_inmateId;
+        const [existingInmate] = await connection.execute(`
+            SELECT id,id_card,firstname,lastname,gender
+            FROM inmate
+            WHERE id_card = ?
+            
+            
+            `,[id_card])
+
+        if (existingInmate.length > 0){
+            real_inmateId = existingInmate[0].id
+        }else{
+            const [inmateResult] = await connection.execute(
+            `INSERT INTO inmate (id_card,prefixeID,firstname, lastname,allow_visit,gender) VALUES (?, ?, ?, ?, ?, ?)`,
+            [id_card,finalPrefixId,firstname, lastname,'1',gender]
+        );
+            real_inmateId = inmateResult.insertId;
+
+        }
+        
 
         // 1. บันทึกลงตาราง inmate ก่อน
-        const [inmateResult] = await connection.execute(
-            `INSERT INTO inmate (id_card,prefixeID,firstname, lastname,allow_visit,gender) VALUES (?, ?, ?, ?, ?, ?)`,
-            [id_card,prefix,firstname, lastname,'1',gender]
-        );
-        const newInmateId = inmateResult.insertId;
+        
+        let finalZoneId = null;
+        if (zoneText) {
+            finalZoneId = zoneMap[zoneText]; // โยนคำว่า "แดน 1" เข้าไป มันจะคายเลข 1 ออกมา
+
+            // 🚨 เช็คว่า "ถ้าหา ID ไม่เจอ (แปลว่าแอดมินพิมพ์ชื่อแดนผิด หรือไม่มีแดนนี้ในระบบ)"
+            if (!finalZoneId) {
+                finalZoneId = null;
+            }
+        }
+
 
         // 2. บันทึกรหัสนักโทษลงตาราง incarcerations
         await connection.execute(
-            `INSERT INTO incarcerations (inmate_rowID, inmate_id,) VALUES (?, ?)`,
-            [newInmateId, inmate_number]
+            `INSERT INTO incarcerations (inmate_rowID, inmate_id,current_location_id) VALUES (?, ?, ?) 
+            ON DUPLICATE KEY UPDATE
+                current_location_id = VALUES(current_location_id)
+            `,
+            [real_inmateId, inmate_number,finalZoneId]
         );
 
         await connection.commit();
-        connection.release();
+        
 
         res.status(201).json({
-            message: "เพิ่มข้อมูลนักโทษสำเร็จ",
-            data: { id: newInmateId, firstname, lastname, inmate_number }
+            message: existingInmate.length > 0 ? "อัปเดตประวัตินักโทษเดิมสำเร็จ" : "เพิ่มข้อมูลนักโทษใหม่สำเร็จ",
+            data: { id: real_inmateId, firstname, lastname, inmate_number }
         });
+
     } catch (error) {
         await connection.rollback();
-        connection.release();
         console.error("Create Inmate Error:", error);
         res.status(500).json({ message: "เกิดข้อผิดพลาดในการเพิ่มข้อมูลนักโทษ" });
+    } finally{
+        if (connection){
+            connection.release()
+        }
     }
 });
+
+
+// ✏️ API แก้ไขข้อมูลนักโทษ
+// ==========================================
+app.put('/admin/inmates/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+    const connection = await db.getConnection();
+    await connection.beginTransaction(); 
+
+    try {
+        const inmateId = req.params.id; // ดึง ID จาก URL
+        const { id_card, prefix, firstname, lastname, gender, allow_visit,inmate_number, zoneText } = req.body;
+
+        // 1. ตรวจสอบข้อมูลเบื้องต้น
+        if (!firstname || !lastname || !inmate_number) {
+            return res.status(400).json({ message: "กรุณากรอก ชื่อ, นามสกุล และ รหัสนักโทษ ให้ครบถ้วน" });
+        }
+        if (id_card && id_card.length !== 13) {
+            return res.status(400).json({ message: "กรุณากรอกเลขบัตรประชาชนให้ครบ 13 หลัก" });
+        }
+
+        // 2. เช็คก่อนว่ามีนักโทษคนนี้ในระบบจริงๆ ไหม
+        const [checkInmate] = await connection.execute(`SELECT id FROM inmate WHERE id = ?`, [inmateId]);
+        if (checkInmate.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ message: "ไม่พบข้อมูลนักโทษที่ต้องการแก้ไข" });
+        }
+
+        if (id_card) {
+            const [duplicateCheck] = await connection.execute(
+                `SELECT id FROM inmate WHERE id_card = ? AND id != ?`, 
+                [id_card, inmateId] // หาคนที่บัตรตรงกัน แต่ ID ไม่ใช่คนที่เรากำลังแก้อยู่
+            );
+            
+            if (duplicateCheck.length > 0) {
+                await connection.rollback();
+                return res.status(400).json({ 
+                    message: `ไม่สามารถแก้ไขได้! เลขบัตรประชาชน ${id_card} นี้ มีประวัติของนักโทษคนอื่นในระบบแล้ว` 
+                });
+            }
+        }
+
+        // 3. วุ้นแปลภาษา: แปลงชื่อแดน และ คำนำหน้า ให้เป็น ID
+        const [zoneRows] = await connection.execute(`SELECT id, location_name FROM inmate_location`);
+        const zoneMap = {};
+        zoneRows.forEach(zone => zoneMap[zone.location_name.toString().trim()] = zone.id);
+        const finalZoneId = zoneText ? (zoneMap[zoneText] || null) : null;
+
+        const [prefixRows] = await connection.execute(`SELECT id_prefixes, prefixes_nameTh FROM prefixes`);
+        const prefixMap = {};
+        prefixRows.forEach(item => prefixMap[item.prefixes_nameTh.toString().trim()] = item.id_prefixes);
+        const finalPrefixId = prefix ? (prefixMap[prefix] || null) : null;
+
+        // 4. อัปเดตข้อมูลตารางหลัก (inmate)
+        await connection.execute(`
+            UPDATE inmate 
+            SET id_card = ?, prefixeID = ?, firstname = ?, lastname = ?, allow_visit = ?, gender = ? 
+            WHERE id = ?
+        `, [id_card, finalPrefixId, firstname, lastname, allow_visit,gender, inmateId]);
+
+        // 5. 🌟 อัปเดตตารางรอง (incarcerations) ด้วยท่า UPSERT เหมือนเดิม!
+        // เผื่อในกรณีที่นักโทษคนนี้ข้อมูลเก่าเคยหลุด (ไม่มีเลขคดี) ก็จะสร้างใหม่ให้เลย
+        await connection.execute(`
+            INSERT INTO incarcerations (inmate_rowID, inmate_id, current_location_id) 
+            VALUES (?, ?, ?)
+            ON DUPLICATE KEY UPDATE 
+                
+                current_location_id = VALUES(current_location_id)
+        `, [inmateId, inmate_number, finalZoneId]);
+
+        // เซฟการเปลี่ยนแปลง
+        await connection.commit();
+
+        res.status(200).json({ message: "แก้ไขข้อมูลนักโทษสำเร็จ" });
+
+    } catch (error) {
+        await connection.rollback();
+        console.error("Update Inmate Error:", error);
+        if (error.code === 'ER_DUP_ENTRY') {
+            return res.status(400).json({ 
+                message: "ข้อมูลนี้ (เช่น เลขบัตร หรือ รหัสนักโทษ) มีซ้ำในระบบแล้ว กรุณาตรวจสอบอีกครั้ง" 
+            });
+        }
+
+
+        res.status(500).json({ message: "เกิดข้อผิดพลาดในการแก้ไขข้อมูลนักโทษ" });
+    } finally {
+        if (connection) {
+            connection.release(); // ปล่อย Connection เสมอ
+        }
+    }
+});
+// ==========================================
+// 🗑️ API ลบข้อมูลนักโทษ
+// ==========================================
+app.delete('/admin/inmates/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN','REGISTRAR']), async (req, res) => {
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    try {
+        const inmateId = req.params.id;
+
+        // 1. เช็คก่อนว่ามีนักโทษคนนี้อยู่จริงไหม
+        const [checkInmate] = await connection.execute(`SELECT id FROM inmate WHERE id = ?`, [inmateId]);
+        if (checkInmate.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ message: "ไม่พบข้อมูลนักโทษที่ต้องการลบ" });
+        }
+
+        // 2. ลบข้อมูลจากตารางลูก (incarcerations) ก่อน
+        await connection.execute(`DELETE FROM incarcerations WHERE inmate_rowID = ?`, [inmateId]);
+
+        // 3. ลบข้อมูลจากตารางแม่ (inmate)
+        await connection.execute(`DELETE FROM inmate WHERE id = ?`, [inmateId]);
+
+        // เซฟการเปลี่ยนแปลง
+        await connection.commit();
+
+        res.status(200).json({ message: "ลบข้อมูลนักโทษออกจากระบบสำเร็จ" });
+
+    } catch (error) {
+        await connection.rollback();
+        console.error("Delete Inmate Error:", error);
+        
+        // 🚨 ดักจับ Error กรณีติด Foreign Key (เช่น มีคนจองเยี่ยมแล้ว ลบไม่ได้!)
+        if (error.code === 'ER_ROW_IS_REFERENCED_2') {
+            return res.status(400).json({ 
+                message: "ไม่สามารถลบได้ เนื่องจากนักโทษคนนี้มีประวัติผูกกับการจองคิวเยี่ยม (visit_booking) แล้ว" 
+            });
+        }
+        
+        res.status(500).json({ message: "เกิดข้อผิดพลาดในการลบข้อมูลนักโทษ" });
+    } finally {
+        if (connection) {
+            connection.release(); // ปล่อย Connection เสมอ
+        }
+    }
+});
+
+
 
 app.get('/', async(req,res) => {
     
