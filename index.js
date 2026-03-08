@@ -187,6 +187,7 @@ cron.schedule('*/5 * * * *', async () => {
                 `คุณมีนัดเข้าเยี่ยมคุณ ${b.inmate_name} ในวันพรุ่งนี้ เวลา ${b.starts_at} น. กรุณาเข้าแอปเพื่อเตรียมตัวก่อนเวลา 15 นาทีครับ`,
                 0
             ]);
+            
 
             const sqlInsert = `INSERT INTO notifications (user_id, title, message, is_read) VALUES ?`;
             await db.query(sqlInsert, [values]);
@@ -209,18 +210,32 @@ app.get('/api/notifications',checkAPI_key, checkAuth, async (req, res) => {
 
         // ดึง 20 รายการล่าสุด
         const [rows] = await db.query(
-            'SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 20',
+            'SELECT title,message,created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 20',
             [userId]
         );
+
+        const thaiDate = new Date(rows.created_at).toLocaleDateString('th-TH', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+        });
         
+        
+
         // นับจำนวนที่ยังไม่ได้อ่าน
         const [unread] = await db.query(
             'SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0',
             [userId]
         );
+        
 
         res.json({
-            notifications: rows,
+            notifications: {
+                title : rows.title,
+                message : rows.message,
+                created_at : rows.created_at
+            },
+            
             unreadCount: unread[0].count
         });
     } catch (error) {
