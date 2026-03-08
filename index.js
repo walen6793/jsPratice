@@ -12,6 +12,7 @@ const jwt = require('jsonwebtoken')
 const moment = require('moment')
 const xlsx = require('xlsx');
 const { Server } = require("socket.io");
+const cron = require('node-cron');
 
 const ExcelJS = require('exceljs');
 const PdfTable = require('pdfkit-table');
@@ -158,6 +159,99 @@ const excelUpload = multer({
         }
     }
 });
+
+cron.schedule('*/5 * * * *', async () => {
+    console.log('⏰ กำลังรันระบบแจ้งเตือนคิวเยี่ยมประจำวัน...');
+    try {
+        // หาคิวของ "วันพรุ่งนี้" ที่สถานะเป็น COMPLETED
+        const sqlFind = `
+            SELECT 
+                vb.relative_user_id AS userId,
+                vs.visit_date,
+                vs.starts_at,
+                CONCAT(i.firstname, ' ', i.lastname) AS inmate_name
+            FROM visit_booking vb
+            JOIN visit_slot vs ON vb.slot_id = vs.id
+            JOIN inmate i ON vb.inmate_id = i.id
+            WHERE DATE(vs.visit_date) = CURDATE() + INTERVAL 1 DAY
+            AND vb.status = 'PENDING'
+        `;
+
+        const [bookings] = await db.query(sqlFind);
+
+        if (bookings.length > 0) {
+            // เตรียมข้อมูลสำหรับ Insert หลายๆ แถวพร้อมกัน
+            const values = bookings.map(b => [
+                b.userId,
+                '📅 แจ้งเตือน: พรุ่งนี้มีคิวเข้าเยี่ยม',
+                `คุณมีนัดเข้าเยี่ยมคุณ ${b.inmate_name} ในวันพรุ่งนี้ เวลา ${b.starts_at} น. กรุณาเข้าแอปเพื่อเตรียมตัวก่อนเวลา 15 นาทีครับ`,
+                0
+            ]);
+
+            const sqlInsert = `INSERT INTO notifications (user_id, title, message, is_read) VALUES ?`;
+            await db.query(sqlInsert, [values]);
+            
+            console.log(`✅ ส่งการแจ้งเตือนสำเร็จ ${bookings.length} รายการ`);
+        }
+    } catch (error) {
+        console.error('❌ Cron Job Notification Error:', error);
+    }
+}, {
+    timezone: "Asia/Bangkok"
+});
+
+
+// 🔔 1. ดึงการแจ้งเตือน (ดึง userId จาก Token โดยตรง)
+app.get('/api/notifications',checkAPI_key, checkAuth, async (req, res) => {
+    try {
+        // ดึง userId ที่ระบุตัวตนได้จาก Middleware
+        const userId = req.user.userId; 
+
+        // ดึง 20 รายการล่าสุด
+        const [rows] = await db.query(
+            'SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 20',
+            [userId]
+        );
+        
+        // นับจำนวนที่ยังไม่ได้อ่าน
+        const [unread] = await db.query(
+            'SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0',
+            [userId]
+        );
+
+        res.json({
+            notifications: rows,
+            unreadCount: unread[0].count
+        });
+    } catch (error) {
+        console.error("Notification Error:", error);
+        res.status(500).json({ error: "ไม่สามารถดึงข้อมูลแจ้งเตือนได้" });
+    }
+});
+
+
+// ✅ 2. อัปเดตเมื่อกดอ่าน (ใส่ checkAuth เพื่อป้องกันการแอบแก้ของคนอื่น)
+app.put('/api/notifications/read/:id', checkAuth, async (req, res) => {
+    try {
+        const notiId = req.params.id;
+        const userId = req.user.userId;
+
+        // UPDATE โดยเช็ค user_id ด้วย เพื่อความปลอดภัย (เผื่อใครสุ่ม ID แจ้งเตือนมั่วๆ)
+        const [result] = await db.query(
+            'UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?', 
+            [notiId, userId]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: "ไม่พบรายการแจ้งเตือนนี้" });
+        }
+
+        res.json({ success: true, message: "อ่านเรียบร้อย" });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 
 
 app.post('/user/claim-inmate', checkAPI_key,checkAuth,upload.fields([
