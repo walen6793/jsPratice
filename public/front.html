@@ -52,7 +52,19 @@ const statusText = document.getElementById('status-text');
 
 let localStream;
 let peerConnection;
-const roomId = "room-1234"; // ฟิกซ์ชื่อห้องไว้ทดสอบก่อน
+// 🌟 1. ดึงค่า Room ID จาก URL (เช่น ?room=BOOKING_001)
+const urlParams = new URLSearchParams(window.location.search);
+const roomId = urlParams.get('room');
+
+// 🌟 2. ดักจับกรณีคนแอบพิมพ์ URL เข้ามาตรงๆ โดยไม่มีรหัสห้อง
+if (!roomId) {
+    alert("❌ ไม่พบรหัสห้องสนทนา! กรุณาเข้าใช้งานผ่านลิงก์ที่ระบบกำหนดให้เท่านั้น");
+    document.getElementById('start-btn').disabled = true; // ล็อกปุ่มเปิดกล้อง
+    document.getElementById('start-btn').style.background = '#666';
+    document.getElementById('status-text').innerText = "❌ ลิงก์ไม่ถูกต้อง ขาดรหัสห้องสนทนา";
+} else {
+    console.log("เตรียมเข้าสู่ห้องส่วนตัวรหัส: ", roomId);
+}
 
 // 🌟 ตัวช่วยเจาะกำแพงเน็ตเวิร์ก (ใช้ STUN Server ฟรีของ Google)
 const configuration = {
