@@ -25,7 +25,8 @@
     <p id="status-text">รอการเชื่อมต่อ...</p>
 
     <button id="start-btn">📞 กดเพื่อเปิดกล้องและไมค์</button>
-
+    <button id="start-btn">📞 กดเพื่อเปิดกล้องและไมค์</button>
+    <button id="hangup-btn" style="display: none; background: #dc3545;">🔴 วางสาย</button>
     <div class="video-container">
         <div>
             <p>คุณ (ญาติ)</p>
@@ -160,6 +161,61 @@ socket.on('ice-candidate', async (candidate) => {
         }
     } catch (e) {
         console.error('Error adding received ice candidate', e);
+    }
+});
+const hangupBtn = document.getElementById('hangup-btn');
+
+// ==========================================
+// 🚨 ฟังก์ชันสำหรับวางสาย
+// ==========================================
+function hangUp() {
+    // 1. ปิดกล้องและไมค์ตัวเอง
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+    }
+    
+    // 2. ปิดท่อการเชื่อมต่อ WebRTC
+    if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+    }
+    
+    // 3. ล้างภาพออกจากหน้าจอ
+    localVideo.srcObject = null;
+    remoteVideo.srcObject = null;
+    
+    // 4. ส่งข้อความบอก Backend ว่าขอออกจากห้องแล้วนะ
+    socket.emit('leave-room', roomId, socket.id);
+    
+    // 5. อัปเดตหน้าตาเว็บ
+    statusText.innerText = "📞 วางสายเรียบร้อยแล้ว";
+    hangupBtn.style.display = 'none';
+    startBtn.style.display = 'inline-block'; // โชว์ปุ่มเริ่มใหม่เผื่ออยากโทรอีกรอบ
+    startBtn.disabled = false;
+}
+
+// ผูกปุ่มกดเข้ากับฟังก์ชัน
+hangupBtn.addEventListener('click', hangUp);
+
+// 🌟 อย่าลืม: ไปที่ Event startBtn.addEventListener('click', ...) 
+// แล้วเพิ่มคำสั่งเปิดปุ่มวางสาย ตอนที่เปิดกล้องสำเร็จด้วยนะครับ:
+// startBtn.style.display = 'none';
+// hangupBtn.style.display = 'inline-block'; <--- เพิ่มบรรทัดนี้
+
+// ==========================================
+// 📥 เมื่ออีกฝ่ายกดวางสาย (Backend แจ้งมา)
+// ==========================================
+socket.on('user-disconnected', (userId) => {
+    console.log("อีกฝ่ายออกจากห้องไปแล้ว:", userId);
+    statusText.innerText = "❌ อีกฝ่ายวางสายแล้ว";
+    
+    // ล้างภาพอีกฝ่ายออกจากจอ
+    remoteVideo.srcObject = null;
+    
+    // ปิดท่อฝั่งเราด้วย
+    if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
     }
 });
     </script>

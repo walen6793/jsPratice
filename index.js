@@ -68,6 +68,17 @@ io.on('connection', (socket) => {
         socket.on('answer', (answer, room) => socket.to(room).emit('answer', answer));
         socket.on('ice-candidate', (candidate, room) => socket.to(room).emit('ice-candidate', candidate));
 
+
+
+        // 🌟 เพิ่ม Event สำหรับตอนที่ User กดปุ่ม "วางสาย"
+    socket.on('leave-room', (roomId, userId) => {
+        socket.leave(roomId); // จับเตะออกจากห้องของ Socket.io
+        console.log(`👋 User ${userId} กดปุ่มวางสายและออกจากห้อง ${roomId}`);
+        
+        // ตะโกนบอกคนที่เหลือในห้องว่า "เขาไปแล้วนะ!"
+        socket.to(roomId).emit('user-disconnected', userId);
+    });
+        
         // เมื่อมีคนกดวางสาย หรือเน็ตหลุด
         socket.on('disconnect', () => {
             console.log(`❌ User ${userId} ออกจากห้อง ${roomId}`);
