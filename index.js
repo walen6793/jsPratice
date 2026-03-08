@@ -65,16 +65,19 @@ const formatThaiDate = (dateInput, includeTime = false) => {
     
     let result = `${day} ${month} ${year}`;
 
-    // 🌟 ถ้าส่ง includeTime = true มา ให้ต่อท้ายด้วยเวลา
     if (includeTime) {
-        const hours = date.getHours().toString().padStart(2, '0');
-        const minutes = date.getMinutes().toString().padStart(2, '0');
-        result += ` (${hours}:${minutes} น.)`;
+        // 🌟 แก้ตรงนี้: บังคับให้ดึงเวลาแบบ Asia/Bangkok
+        const timeString = date.toLocaleTimeString('th-TH', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+            timeZone: 'Asia/Bangkok' // <--- บังคับเป็นเวลาไทย
+        });
+        result += ` (${timeString} น.)`;
     }
     
     return result;
 };
-
 
 const io = new Server(server, {
     cors: {
