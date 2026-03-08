@@ -49,16 +49,30 @@ app.use(express.static('public'));
 app.use(checkAPI_key)
 const server = http.createServer(app);
 
-const formatThaiDate = (dateString) => {
+const formatThaiDate = (dateInput, includeTime = false) => {
+    if (!dateInput) return "ไม่ระบุวันที่";
+    const date = new Date(dateInput);
+    if (isNaN(date.getTime())) return "วันที่ไม่ถูกต้อง"; 
+
     const monthNames = [
         "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
         "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"
     ];
-    const date = new Date(dateString);
+    
     const day = date.getDate();
     const month = monthNames[date.getMonth()];
-    const year = date.getFullYear() + 543; // แปลง ค.ศ. เป็น พ.ศ.
-    return `${day} ${month} ${year}`;
+    const year = date.getFullYear() + 543;
+    
+    let result = `${day} ${month} ${year}`;
+
+    // 🌟 ถ้าส่ง includeTime = true มา ให้ต่อท้ายด้วยเวลา
+    if (includeTime) {
+        const hours = date.getHours().toString().padStart(2, '0');
+        const minutes = date.getMinutes().toString().padStart(2, '0');
+        result += ` (${hours}:${minutes} น.)`;
+    }
+    
+    return result;
 };
 
 
@@ -227,7 +241,7 @@ app.get('/api/notifications',checkAPI_key, checkAuth, async (req, res) => {
             ...noti,
             // เรียกใช้ฟังก์ชัน formatThaiDate ที่เราทำไว้
             // ถ้ายังไม่ได้ก๊อปฟังก์ชันนั้นมา ให้เอาไปวางไว้บนสุดของไฟล์ด้วยนะครับ
-            created_at: formatThaiDate(noti.created_at) 
+            created_at: formatThaiDate(noti.created_at,true) 
         }));
 
         res.json({
