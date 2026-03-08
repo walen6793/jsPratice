@@ -22,6 +22,9 @@
 <body>
 
     <h2>🎥 ห้องสนทนาออนไลน์</h2>
+    <h3 id="timer-display" style="display: none; color: #ffcc00; background: #333; padding: 10px; border-radius: 8px; width: fit-content; margin: 10px auto;">
+    ⏱️ เวลาที่เหลือ: 00:00
+</h3>
     <p id="status-text">รอการเชื่อมต่อ...</p>
 
     <button id="start-btn">📞 กดเพื่อเปิดกล้องและไมค์</button>
@@ -53,6 +56,9 @@ const statusText = document.getElementById('status-text');
 
 let localStream;
 let peerConnection;
+
+let callTimer = null;
+let totalSeconds = 60;
 // 🌟 1. ดึงค่า Room ID จาก URL (เช่น ?room=BOOKING_001)
 const urlParams = new URLSearchParams(window.location.search);
 const roomId = urlParams.get('room');
@@ -171,6 +177,9 @@ const hangupBtn = document.getElementById('hangup-btn');
 // ==========================================
 function hangUp() {
     // 1. ปิดกล้องและไมค์ตัวเอง
+    if (callTimer) clearInterval(callTimer);
+    callTimer = null;
+    document.getElementById('timer-display').style.display = 'none';
     if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
     }
@@ -193,6 +202,36 @@ function hangUp() {
     hangupBtn.style.display = 'none';
     startBtn.style.display = 'inline-block'; // โชว์ปุ่มเริ่มใหม่เผื่ออยากโทรอีกรอบ
     startBtn.disabled = false;
+}
+
+function startTimer() {
+    const timerDisplay = document.getElementById('timer-display');
+    timerDisplay.style.display = 'block'; // โชว์นาฬิกา
+    timerDisplay.style.color = '#ffcc00'; // รีเซ็ตเป็นสีเหลือง
+
+    callTimer = setInterval(() => {
+        if (totalSeconds <= 0) {
+            clearInterval(callTimer);
+            callTimer = null;
+            // 🚨 หมดเวลา! สั่งตัดสายทันที
+            alert("⏳ หมดเวลาการเยี่ยมญาติ ระบบกำลังตัดสายอัตโนมัติ");
+            hangUp(); 
+        } else {
+            totalSeconds--;
+            
+            // แปลงวินาทีเป็น นาที:วินาที
+            let minutes = Math.floor(totalSeconds / 60);
+            let seconds = totalSeconds % 60;
+            let timeString = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+            
+            timerDisplay.innerText = `⏱️ เวลาที่เหลือ: ${timeString}`;
+
+            // 🔴 เปลี่ยนเป็นสีแดงกระพริบเตือน เมื่อเหลือ 15 วินาทีสุดท้าย
+            if (totalSeconds <= 15) {
+                timerDisplay.style.color = '#ff4d4d';
+            }
+        }
+    }, 1000); // ทำงานทุกๆ 1000 มิลลิวินาที (1 วินาที)
 }
 
 // ผูกปุ่มกดเข้ากับฟังก์ชัน
