@@ -233,7 +233,7 @@ app.get('/api/notifications',checkAPI_key, checkAuth, async (req, res) => {
             notifications: {
                 title : rows.title,
                 message : rows.message,
-                created_at : rows.created_at
+                created_at : thaiDate
             },
             
             unreadCount: unread[0].count
