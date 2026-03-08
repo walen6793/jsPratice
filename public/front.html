@@ -23,7 +23,7 @@
 
     <h2>🎥 ห้องสนทนาออนไลน์</h2>
     <h3 id="timer-display" style="display: none; color: #ffcc00; background: #333; padding: 10px; border-radius: 8px; width: fit-content; margin: 10px auto;">
-    ⏱️ เวลาที่เหลือ: 00:00
+    ⏱️ เวลาที่เหลือ: 00timer-display:00
 </h3>
     <p id="status-text">รอการเชื่อมต่อ...</p>
 
@@ -121,6 +121,11 @@ function createPeerConnection() {
     peerConnection.ontrack = event => {
         remoteVideo.srcObject = event.streams[0]; // เอาภาพเพื่อนไปใส่จอใหญ่
         statusText.innerText = "🎥 เชื่อมต่อสำเร็จ! กำลังสนทนา...";
+        console.log("🎥 ภาพอีกฝั่งมาถึงแล้ว! เตรียมเรียกนาฬิกา..."); // 🌟 ตัวจับผิด!
+        
+        if (!callTimer) {
+            startTimer();
+        }
     };
 
     // แลกเปลี่ยนที่อยู่เน็ตเวิร์ก (ICE) กับอีกฝ่าย
