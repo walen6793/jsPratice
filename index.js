@@ -177,7 +177,7 @@ const excelUpload = multer({
     }
 });
 
-cron.schedule('*/5 * * * *', async () => {
+cron.schedule('0 * * * *', async () => {
     console.log('⏰ กำลังรันระบบแจ้งเตือนคิวเยี่ยมประจำวัน...');
     try {
         // หาคิวของ "วันพรุ่งนี้" ที่สถานะเป็น COMPLETED
@@ -259,7 +259,7 @@ app.get('/api/notifications',checkAPI_key, checkAuth, async (req, res) => {
 
 
 // ✅ 2. อัปเดตเมื่อกดอ่าน (ใส่ checkAuth เพื่อป้องกันการแอบแก้ของคนอื่น)
-app.put('/api/notifications/read/:id', checkAuth, async (req, res) => {
+app.put('/api/notifications/read/:id', checkAPI_key,checkAuth, async (req, res) => {
     try {
         const notiId = req.params.id;
         const userId = req.user.userId;
