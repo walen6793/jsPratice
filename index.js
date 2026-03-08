@@ -13,6 +13,11 @@ const moment = require('moment')
 const xlsx = require('xlsx');
 const { Server } = require("socket.io");
 
+const ExcelJS = require('exceljs');
+const PdfTable = require('pdfkit-table');
+
+
+
 const checkAPI_key = require('./middleware/checkAPI_key')
 const checkAuth = require('./middleware/checkAuth')
 const checkAdminAuth = require('./middleware/checkAdminAuth')
@@ -1244,6 +1249,254 @@ app.put('/admin/visit-slots/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPE
         res.status(500).json({ message: "เกิดข้อผิดพลาดในการแก้ไขรอบเวลา" });
     }
 });
+
+// 📊 API สำหรับ Dashboard: ดึงตัวเลขสรุป
+app.get('/api/dashboard/summary',checkAPI_key,checkAdminAuth,checkRole(['SUPER_ADMIN','COMMANDER']), async (req, res) => {
+    try {
+        const startDate = req.query.date || new Date().toISOString().split('T')[0];
+        const range = req.query.range || 'daily';
+        
+        let daysToAdd = 0;
+        if (range === 'weekly') {
+            daysToAdd = 6; 
+        }
+
+        const endDateObj = new Date(startDate);
+        endDateObj.setDate(endDateObj.getDate() + daysToAdd);
+        const endDate = endDateObj.toISOString().split('T')[0];
+
+        // 📊 1. คำสั่ง SQL สรุปตัวเลข (เหมือนเดิม)
+        const sqlStats = `
+            SELECT 
+                COUNT(DISTINCT vb.slot_id) AS total_bookings,
+                COUNT(DISTINCT CASE WHEN vb.status = 'COMPLETED' THEN vb.slot_id END) AS completed_visits,
+                COUNT(DISTINCT CASE WHEN vb.status = 'CANCELLED' OR vb.status = 'REJECTED' THEN vb.slot_id END) AS cancelled_visits,
+                COUNT(DISTINCT CASE WHEN vb.status = 'PENDING' THEN vb.slot_id END) AS pending_visits
+            FROM visit_booking AS vb 
+            JOIN visit_slot AS vs ON vb.slot_id = vs.id 
+            WHERE DATE(vs.visit_date) BETWEEN ? AND ?
+        `;
+        
+        // 📋 2. คำสั่ง SQL ดึงรายการคิว (🌟 อัปเดตเพิ่ม JOIN ชื่อนักโทษและญาติ)
+        const sqlQueueList = `
+            SELECT 
+                vb.id AS booking_id,
+                vs.id AS slot_id,
+                DATE_FORMAT(vs.visit_date, '%Y-%m-%d') AS visit_date, 
+                vs.starts_at,
+                vs.ends_at,
+                vb.status,
+                
+                -- 🌟 ดึงชื่อผู้ต้องขัง (ใช้ CONCAT เอาชื่อต่อกับนามสกุล)
+                -- 🚨 กรุณาแก้ i.first_name, i.last_name ให้ตรงกับคอลัมน์ในตาราง inmate ของคุณ
+                CONCAT(i.firstname, ' ', i.lastname) AS inmate_name,
+                
+                -- 🌟 ดึงชื่อญาติ/ผู้จอง 
+                -- 🚨 กรุณาแก้ u.first_name, u.last_name ให้ตรงกับคอลัมน์ตาราง users ของคุณ
+                CONCAT(u.firstname, ' ', u.lastname) AS visitor_name
+
+            FROM visit_booking AS vb 
+            JOIN visit_slot AS vs ON vb.slot_id = vs.id 
+            
+            -- 🌟 สั่งเชื่อมตาราง (JOIN) เพื่อไปดึงชื่อมา
+            -- 🚨 กรุณาตรวจสอบ vb.inmate_id และ vb.relative_user_id ให้ตรงกับ foreign key ในตาราง booking ของคุณ
+            LEFT JOIN inmate AS i ON vb.inmate_id = i.id
+            LEFT JOIN user AS u ON vb.relative_user_id = u.userId
+
+            WHERE DATE(vs.visit_date) BETWEEN ? AND ?
+            AND vb.id IN (
+                SELECT MAX(id) 
+                FROM visit_booking 
+                GROUP BY slot_id
+            )
+            ORDER BY vs.visit_date ASC, vs.starts_at ASC
+        `;
+
+        // ⚡ 3. รัน Query
+        const [ [statsResults], [queueResults] ] = await Promise.all([
+            db.query(sqlStats, [startDate, endDate]),
+            db.query(sqlQueueList, [startDate, endDate])
+        ]);
+
+        const stats = statsResults[0] || { 
+            total_bookings: 0, completed_visits: 0, cancelled_visits: 0, pending_visits: 0 
+        };
+
+        // 🎉 ส่งข้อมูลกลับไป
+        res.json({
+            viewMode: range, 
+            dateRange: { start: startDate, end: endDate },
+            summary: {
+                totalBookings: Number(stats.total_bookings),
+                completedVisits: Number(stats.completed_visits),
+                cancelledVisits: Number(stats.cancelled_visits),
+                pendingVisits: Number(stats.pending_visits)
+            },
+            queueList: queueResults // 🌟 ตอนนี้ใน Array นี้จะมี inmate_name และ visitor_name โผล่มาแล้ว!
+        });
+
+    } catch (error) {
+        console.error("Dashboard API Error:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/dashboard/export', async (req, res) => {
+    try {
+        const format = req.query.format || 'csv'; // รับค่าว่าอยากได้ไฟล์อะไร (csv, excel, pdf)
+        const startDate = req.query.date || new Date().toISOString().split('T')[0];
+        
+        // ก๊อปปี้ SQL ดึงคิวงานมาจาก API Dashboard (ผมย่อให้ดูสั้นๆ นะครับ)
+        const sqlQueueList = `
+            SELECT 
+                vb.id AS booking_id,
+                DATE_FORMAT(vs.visit_date, '%Y-%m-%d') AS visit_date, 
+                vs.starts_at,
+                vs.ends_at,
+                vb.status,
+                CONCAT(i.firstname, ' ', i.lastname) AS inmate_name,
+                CONCAT(u.firstname, ' ', u.lastname) AS visitor_name
+            FROM visit_booking AS vb 
+            JOIN visit_slot AS vs ON vb.slot_id = vs.id 
+            LEFT JOIN inmate AS i ON vb.inmate_id = i.id
+            LEFT JOIN user AS u ON vb.relative_user_id = u.userId
+            WHERE DATE(vs.visit_date) = ?
+            AND vb.id IN (SELECT MAX(id) FROM visit_booking GROUP BY slot_id)
+            ORDER BY vs.starts_at ASC
+        `;
+
+        const [queueResults] = await db.query(sqlQueueList, [startDate]);
+
+        // =====================================
+        // 📄 1. ส่งออกเป็น CSV
+        // =====================================
+        if (format === 'csv') {
+            let csv = '\uFEFF'; // ใส่ BOM เพื่อให้ Excel อ่านภาษาไทยได้ ไม่เป็นภาษาต่างดาว
+            csv += 'รหัสจอง,วันที่,เวลาเริ่ม,เวลาจบ,สถานะ,ชื่อผู้ต้องขัง,ชื่อญาติ\n';
+            
+            queueResults.forEach(row => {
+                csv += `${row.booking_id},${row.visit_date},${row.starts_at},${row.ends_at},${row.status},${row.inmate_name},${row.visitor_name}\n`;
+            });
+
+            res.header('Content-Type', 'text/csv; charset=utf-8');
+            res.attachment(`report_${startDate}.csv`);
+            return res.send(csv);
+        }
+
+        // =====================================
+        // 📊 2. ส่งออกเป็น Excel (.xlsx)
+        // =====================================
+        if (format === 'excel') {
+            const workbook = new ExcelJS.Workbook();
+            const sheet = workbook.addWorksheet('รายการเยี่ยมญาติ');
+
+            // กำหนดหัวคอลัมน์
+            sheet.columns = [
+                { header: 'รหัสจอง', key: 'booking_id', width: 10 },
+                { header: 'วันที่', key: 'visit_date', width: 15 },
+                { header: 'เวลาเริ่ม', key: 'starts_at', width: 15 },
+                { header: 'เวลาจบ', key: 'ends_at', width: 15 },
+                { header: 'สถานะ', key: 'status', width: 15 },
+                { header: 'ชื่อผู้ต้องขัง', key: 'inmate_name', width: 30 },
+                { header: 'ชื่อญาติ', key: 'visitor_name', width: 30 }
+            ];
+
+            // ใส่ข้อมูลลงไป
+            sheet.addRows(queueResults);
+
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', `attachment; filename=report_${startDate}.xlsx`);
+            
+            await workbook.xlsx.write(res);
+            return res.end();
+        }
+
+        // =====================================
+        // 📕 3. ส่งออกเป็น PDF
+        // =====================================
+        if (format === 'pdf') {
+            const doc = new PdfTable({ margin: 30, size: 'A4' });
+            
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename=report_${startDate}.pdf`);
+            doc.pipe(res);
+
+            // 🚨 คำเตือนเรื่องภาษาไทย: PDFKit จะอ่านภาษาไทยไม่ออกถ้าไม่มีฟอนต์ 
+            // คุณต้องโหลดไฟล์ฟอนต์ THSarabunNew.ttf มาใส่ในโฟลเดอร์โปรเจกต์ แล้วเปิดคอมเมนต์บรรทัดล่างนี้นะครับ
+            // doc.font('path/to/THSarabunNew.ttf'); 
+
+            const table = {
+                title: `รายงานการเยี่ยมญาติ ประจำวันที่ ${startDate}`,
+                headers: ["รหัส", "วันที่", "เวลาเริ่ม", "เวลาจบ", "สถานะ", "ผู้ต้องขัง", "ญาติ"],
+                rows: queueResults.map(row => [
+                    row.booking_id, row.visit_date, row.starts_at, row.ends_at, row.status, row.inmate_name, row.visitor_name
+                ])
+            };
+
+            await doc.table(table, { width: 500 });
+            doc.end();
+        }
+
+    } catch (error) {
+        console.error("Export API Error:", error);
+        res.status(500).send("เกิดข้อผิดพลาดในการสร้างไฟล์รายงาน");
+    }
+});
+
+// 📈 API สำหรับ Dashboard: กราฟสถิติการเยี่ยมย้อนหลัง 7 วัน
+app.get('/api/dashboard/chart', async (req, res) => {
+    try {
+        // 1️⃣ สร้าง Array วันที่ย้อนหลัง 7 วันเตรียมไว้ (เพื่อให้กราฟไม่แหว่ง ถ้าวันไหนยอดเป็น 0)
+        let chartData = [];
+        for (let i = 6; i >= 0; i--) {
+            let d = new Date();
+            d.setDate(d.getDate() - i);
+            // แปลงฟอร์แมตเป็น YYYY-MM-DD ให้ตรงกับ SQL
+            let dateString = d.toISOString().split('T')[0]; 
+            chartData.push({ date: dateString, count: 0 });
+        }
+
+        // 2️⃣ คำสั่ง SQL ดึงยอดการเยี่ยม 7 วันย้อนหลัง
+        // ใช้ DATE_FORMAT เพื่อให้วันที่ออกมาเป็น String YYYY-MM-DD แบบเป๊ะๆ
+        const sqlChart = `
+            SELECT 
+                DATE_FORMAT(vs.visit_date, '%Y-%m-%d') AS date_str, 
+                COUNT(vb.id) AS count 
+            FROM visit_booking AS vb 
+            JOIN visit_slot AS vs ON vb.slot_id = vs.id 
+            WHERE vs.visit_date >= CURDATE() - INTERVAL 6 DAY
+            GROUP BY DATE_FORMAT(vs.visit_date, '%Y-%m-%d')
+            ORDER BY date_str ASC
+        `;
+
+        // 3️⃣ รัน Query
+        const [rows] = await db.query(sqlChart);
+
+        // 4️⃣ เอาข้อมูลจาก Database มาหยอดใส่ Array ที่เราเตรียมไว้
+        rows.forEach(row => {
+            // หาว่าข้อมูลจาก DB ตรงกับวันที่ไหนใน Array
+            let targetDay = chartData.find(d => d.date === row.date_str);
+            if (targetDay) {
+                targetDay.count = row.count; // อัปเดตยอดจาก 0 เป็นตัวเลขจริง
+            }
+        });
+
+        // 5️⃣ แยกข้อมูลเป็น 2 ก้อนเตรียมส่งให้ Frontend (React Native / Chart.js ชอบแบบนี้)
+        const labels = chartData.map(d => d.date); // ก้อนวันที่ (แกน X)
+        const data = chartData.map(d => d.count);  // ก้อนตัวเลข (แกน Y)
+
+        res.json({
+            labels: labels,
+            data: data
+        });
+
+    } catch (error) {
+        console.error("Dashboard Chart API Error:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+
 
 app.get('/', async(req,res) => {
     
