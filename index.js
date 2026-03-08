@@ -1343,10 +1343,25 @@ app.get('/api/dashboard/summary',checkAPI_key,checkAdminAuth,checkRole(['SUPER_A
 
 app.get('/api/dashboard/export', async (req, res) => {
     try {
-        const format = req.query.format || 'csv'; // รับค่าว่าอยากได้ไฟล์อะไร (csv, excel, pdf)
-        const startDate = req.query.date || new Date().toISOString().split('T')[0];
+        const format = req.query.format || 'csv'; 
         
-        // ก๊อปปี้ SQL ดึงคิวงานมาจาก API Dashboard (ผมย่อให้ดูสั้นๆ นะครับ)
+        // 🗓️ 1. รับค่า startDate และ endDate (ถ้าไม่ส่งมา ให้ใช้วันนี้เป็นค่าเริ่มต้น)
+        const reqStartDate = req.query.startDate || new Date().toISOString().split('T')[0];
+        const reqEndDate = req.query.endDate || reqStartDate; 
+
+        // 📊 2. คำสั่ง SQL สรุปตัวเลข (เปลี่ยนมาใช้ BETWEEN เพื่อรองรับช่วงเวลา)
+        const sqlStats = `
+            SELECT 
+                COUNT(DISTINCT vb.slot_id) AS total_bookings,
+                COUNT(DISTINCT CASE WHEN vb.status = 'COMPLETED' THEN vb.slot_id END) AS completed_visits,
+                COUNT(DISTINCT CASE WHEN vb.status = 'CANCELLED' OR vb.status = 'REJECTED' THEN vb.slot_id END) AS cancelled_visits,
+                COUNT(DISTINCT CASE WHEN vb.status = 'PENDING' THEN vb.slot_id END) AS pending_visits
+            FROM visit_booking AS vb 
+            JOIN visit_slot AS vs ON vb.slot_id = vs.id 
+            WHERE DATE(vs.visit_date) BETWEEN ? AND ?
+        `;
+
+        // 📋 3. คำสั่ง SQL ดึงคิวงาน (🌟 เพิ่ม i.id AS inmate_id และใช้ BETWEEN)
         const sqlQueueList = `
             SELECT 
                 vb.id AS booking_id,
@@ -1354,32 +1369,48 @@ app.get('/api/dashboard/export', async (req, res) => {
                 vs.starts_at,
                 vs.ends_at,
                 vb.status,
+                ic.inmate_id AS inmate_id, -- 🌟 ดึงรหัสผู้ต้องขังมาด้วย (ถ้าตารางคุณไม่ได้ชื่อ id ให้แก้ให้ตรงนะครับ)
                 CONCAT(i.firstname, ' ', i.lastname) AS inmate_name,
                 CONCAT(u.firstname, ' ', u.lastname) AS visitor_name
             FROM visit_booking AS vb 
             JOIN visit_slot AS vs ON vb.slot_id = vs.id 
             LEFT JOIN inmate AS i ON vb.inmate_id = i.id
+            JOIN incarcerations AS ic ON ic.inmate_rowID = i.id
             LEFT JOIN user AS u ON vb.relative_user_id = u.userId
-            WHERE DATE(vs.visit_date) = ?
+            WHERE DATE(vs.visit_date) BETWEEN ? AND ?
             AND vb.id IN (SELECT MAX(id) FROM visit_booking GROUP BY slot_id)
-            ORDER BY vs.starts_at ASC
+            ORDER BY vs.visit_date ASC, vs.starts_at ASC
         `;
 
-        const [queueResults] = await db.query(sqlQueueList, [startDate]);
+        // ⚡ รัน Query โดยส่งพารามิเตอร์ไป 2 ตัว คือ [reqStartDate, reqEndDate]
+        const [ [statsResults], [queueResults] ] = await Promise.all([
+            db.query(sqlStats, [reqStartDate, reqEndDate]),
+            db.query(sqlQueueList, [reqStartDate, reqEndDate])
+        ]);
+
+        const stats = statsResults[0] || { total_bookings: 0, completed_visits: 0, cancelled_visits: 0, pending_visits: 0 };
+        const reportTitle = `รายงานสรุปการเยี่ยมญาติ ตั้งแต่วันที่ ${reqStartDate} ถึง ${reqEndDate}`;
 
         // =====================================
         // 📄 1. ส่งออกเป็น CSV
         // =====================================
         if (format === 'csv') {
-            let csv = '\uFEFF'; // ใส่ BOM เพื่อให้ Excel อ่านภาษาไทยได้ ไม่เป็นภาษาต่างดาว
-            csv += 'รหัสจอง,วันที่,เวลาเริ่ม,เวลาจบ,สถานะ,ชื่อผู้ต้องขัง,ชื่อญาติ\n';
+            let csv = '\uFEFF'; 
             
+            csv += `${reportTitle}\n`;
+            csv += `ยอดการจองทั้งหมด, ${stats.total_bookings} คิว\n`;
+            csv += `เข้าเยี่ยมสำเร็จ, ${stats.completed_visits} คิว\n`;
+            csv += `รอดำเนินการ, ${stats.pending_visits} คิว\n`;
+            csv += `ยกเลิก, ${stats.cancelled_visits} คิว\n\n`; 
+            
+            // 🌟 เพิ่มคอลัมน์ รหัสผู้ต้องขัง
+            csv += 'รหัสจอง,วันที่,เวลาเริ่ม,เวลาจบ,สถานะ,รหัสผู้ต้องขัง,ชื่อผู้ต้องขัง,ชื่อญาติ\n';
             queueResults.forEach(row => {
-                csv += `${row.booking_id},${row.visit_date},${row.starts_at},${row.ends_at},${row.status},${row.inmate_name},${row.visitor_name}\n`;
+                csv += `${row.booking_id},${row.visit_date},${row.starts_at},${row.ends_at},${row.status},${row.inmate_id},${row.inmate_name},${row.visitor_name}\n`;
             });
 
             res.header('Content-Type', 'text/csv; charset=utf-8');
-            res.attachment(`report_${startDate}.csv`);
+            res.attachment(`report_${reqStartDate}_to_${reqEndDate}.csv`);
             return res.send(csv);
         }
 
@@ -1390,22 +1421,31 @@ app.get('/api/dashboard/export', async (req, res) => {
             const workbook = new ExcelJS.Workbook();
             const sheet = workbook.addWorksheet('รายการเยี่ยมญาติ');
 
-            // กำหนดหัวคอลัมน์
+            // 🌟 เพิ่มคอลัมน์ รหัสผู้ต้องขัง 
             sheet.columns = [
-                { header: 'รหัสจอง', key: 'booking_id', width: 10 },
-                { header: 'วันที่', key: 'visit_date', width: 15 },
-                { header: 'เวลาเริ่ม', key: 'starts_at', width: 15 },
-                { header: 'เวลาจบ', key: 'ends_at', width: 15 },
-                { header: 'สถานะ', key: 'status', width: 15 },
-                { header: 'ชื่อผู้ต้องขัง', key: 'inmate_name', width: 30 },
-                { header: 'ชื่อญาติ', key: 'visitor_name', width: 30 }
+                { width: 10 }, { width: 15 }, { width: 15 }, { width: 15 }, 
+                { width: 15 }, { width: 15 }, { width: 30 }, { width: 30 }
             ];
 
-            // ใส่ข้อมูลลงไป
-            sheet.addRows(queueResults);
+            sheet.addRow([reportTitle]).font = { bold: true, size: 14 };
+            sheet.addRow(['ยอดการจองทั้งหมด', stats.total_bookings, 'คิว']);
+            sheet.addRow(['เข้าเยี่ยมสำเร็จ', stats.completed_visits, 'คิว']);
+            sheet.addRow(['รอดำเนินการ', stats.pending_visits, 'คิว']);
+            sheet.addRow(['ยกเลิก', stats.cancelled_visits, 'คิว']);
+            sheet.addRow([]); 
+
+            const headerRow = sheet.addRow(['รหัสจอง', 'วันที่', 'เวลาเริ่ม', 'เวลาจบ', 'สถานะ', 'รหัสผู้ต้องขัง', 'ชื่อผู้ต้องขัง', 'ชื่อญาติ']);
+            headerRow.font = { bold: true };
+            headerRow.eachCell((cell) => {
+                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFCCCCCC' } };
+            });
+
+            queueResults.forEach(row => {
+                sheet.addRow([row.booking_id, row.visit_date, row.starts_at, row.ends_at, row.status, row.inmate_id, row.inmate_name, row.visitor_name]);
+            });
 
             res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-            res.setHeader('Content-Disposition', `attachment; filename=report_${startDate}.xlsx`);
+            res.setHeader('Content-Disposition', `attachment; filename=report_${reqStartDate}_to_${reqEndDate}.xlsx`);
             
             await workbook.xlsx.write(res);
             return res.end();
@@ -1418,22 +1458,35 @@ app.get('/api/dashboard/export', async (req, res) => {
             const doc = new PdfTable({ margin: 30, size: 'A4' });
             
             res.setHeader('Content-Type', 'application/pdf');
-            res.setHeader('Content-Disposition', `attachment; filename=report_${startDate}.pdf`);
+            res.setHeader('Content-Disposition', `attachment; filename=report_${reqStartDate}_to_${reqEndDate}.pdf`);
             doc.pipe(res);
 
-            // 🚨 คำเตือนเรื่องภาษาไทย: PDFKit จะอ่านภาษาไทยไม่ออกถ้าไม่มีฟอนต์ 
-            // คุณต้องโหลดไฟล์ฟอนต์ THSarabunNew.ttf มาใส่ในโฟลเดอร์โปรเจกต์ แล้วเปิดคอมเมนต์บรรทัดล่างนี้นะครับ
-            // doc.font('path/to/THSarabunNew.ttf'); 
+            if (fs.existsSync('./fonts/THSarabun.ttf')) {
+                doc.font('./fonts/THSarabun.ttf');
+            }
 
+            doc.fontSize(18).text(reportTitle, { align: 'center' });
+            doc.moveDown(0.5);
+            doc.fontSize(14).text(`ยอดการจองทั้งหมด : ${stats.total_bookings} คิว`);
+            doc.text(`เข้าเยี่ยมสำเร็จ      : ${stats.completed_visits} คิว`);
+            doc.text(`รอดำเนินการ       : ${stats.pending_visits} คิว`);
+            doc.text(`ยกเลิก            : ${stats.cancelled_visits} คิว`);
+            doc.moveDown(1); 
+
+            // 🌟 เพิ่มคอลัมน์ รหัสนักโทษ (ผมย่อคำให้สั้นลง เพื่อให้พอดีหน้ากระดาษ PDF)
             const table = {
-                title: `รายงานการเยี่ยมญาติ ประจำวันที่ ${startDate}`,
-                headers: ["รหัส", "วันที่", "เวลาเริ่ม", "เวลาจบ", "สถานะ", "ผู้ต้องขัง", "ญาติ"],
+                headers: ["รหัส", "วันที่", "เริ่ม", "จบ", "สถานะ", "รหัสนักโทษ", "ชื่อผู้ต้องขัง", "ชื่อญาติ"],
                 rows: queueResults.map(row => [
-                    row.booking_id, row.visit_date, row.starts_at, row.ends_at, row.status, row.inmate_name, row.visitor_name
+                    row.booking_id, row.visit_date, row.starts_at, row.ends_at, row.status, row.inmate_id, row.inmate_name, row.visitor_name
                 ])
             };
 
-            await doc.table(table, { width: 500 });
+            await doc.table(table, { 
+                width: 530, // ขยายความกว้างตารางนิดนึงเพราะคอลัมน์เพิ่มขึ้น
+                prepareHeader: () => doc.font('./fonts/THSarabun.ttf').fontSize(14),
+                prepareRow: () => doc.font('./fonts/THSarabun.ttf').fontSize(12)
+            });
+
             doc.end();
         }
 
@@ -1442,7 +1495,6 @@ app.get('/api/dashboard/export', async (req, res) => {
         res.status(500).send("เกิดข้อผิดพลาดในการสร้างไฟล์รายงาน");
     }
 });
-
 // 📈 API สำหรับ Dashboard: กราฟสถิติการเยี่ยมย้อนหลัง 7 วัน
 app.get('/api/dashboard/chart', async (req, res) => {
     try {
