@@ -48,6 +48,19 @@ app.use(express.static('public'));
 app.use(checkAPI_key)
 const server = http.createServer(app);
 
+const formatThaiDate = (dateString) => {
+    const monthNames = [
+        "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+        "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"
+    ];
+    const date = new Date(dateString);
+    const day = date.getDate();
+    const month = monthNames[date.getMonth()];
+    const year = date.getFullYear() + 543; // แปลง ค.ศ. เป็น พ.ศ.
+    return `${day} ${month} ${year}`;
+};
+
+
 const io = new Server(server, {
     cors: {
         origin: "*", // อนุญาตให้หน้าเว็บ (Frontend) เชื่อมต่อเข้ามาได้
@@ -1406,7 +1419,7 @@ app.get('/api/dashboard/export', async (req, res) => {
             // 🌟 เพิ่มคอลัมน์ รหัสผู้ต้องขัง
             csv += 'รหัสจอง,วันที่,เวลาเริ่ม,เวลาจบ,สถานะ,รหัสผู้ต้องขัง,ชื่อผู้ต้องขัง,ชื่อญาติ\n';
             queueResults.forEach(row => {
-                csv += `${row.booking_id},${row.visit_date},${row.starts_at},${row.ends_at},${row.status},${row.inmate_id},${row.inmate_name},${row.visitor_name}\n`;
+                csv += `${row.booking_id},${formatThaiDate(row.visit_date)},${row.starts_at},${row.ends_at},${row.status},${row.inmate_id},${row.inmate_name},${row.visitor_name}\n`;
             });
 
             res.header('Content-Type', 'text/csv; charset=utf-8');
@@ -1441,7 +1454,7 @@ app.get('/api/dashboard/export', async (req, res) => {
             });
 
             queueResults.forEach(row => {
-                sheet.addRow([row.booking_id, row.visit_date, row.starts_at, row.ends_at, row.status, row.inmate_id, row.inmate_name, row.visitor_name]);
+                sheet.addRow([row.booking_id, formatThaiDate(row.visit_date), row.starts_at, row.ends_at, row.status, row.inmate_id, row.inmate_name, row.visitor_name]);
             });
 
             res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -1474,11 +1487,18 @@ app.get('/api/dashboard/export', async (req, res) => {
             }
 
             // ... (โค้ดพิมพ์ส่วนสรุปเหมือนเดิม) ...
+            doc.fontSize(18).text(reportTitle, { align: 'center' });
+            doc.moveDown(0.5);
+            doc.fontSize(14).text(`ยอดการจองทั้งหมด : ${stats.total_bookings} คิว`);
+            doc.text(`เข้าเยี่ยมสำเร็จ      : ${stats.completed_visits} คิว`);
+            doc.text(`รอดำเนินการ       : ${stats.pending_visits} คิว`);
+            doc.text(`ยกเลิก            : ${stats.cancelled_visits} คิว`);
+            doc.moveDown(1);
 
             const table = {
                 headers: ["รหัส", "วันที่", "เริ่ม", "จบ", "สถานะ", "รหัสนักโทษ", "ชื่อผู้ต้องขัง", "ชื่อญาติ"],
                 rows: queueResults.map(row => [
-                    row.booking_id, row.visit_date, row.starts_at, row.ends_at, row.status, row.inmate_id, row.inmate_name, row.visitor_name
+                    row.booking_id, formatThaiDate(row.visit_date), row.starts_at, row.ends_at, row.status, row.inmate_id, row.inmate_name, row.visitor_name
                 ])
             };
 
