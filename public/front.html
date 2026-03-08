@@ -88,6 +88,7 @@ startBtn.addEventListener('click', async () => {
         
         localVideo.srcObject = localStream;
         startBtn.style.display = 'none';
+        hangupBtn.style.display = 'inline-block'; // โชว์ปุ่มวางสายสีแดง 🔴
 
         // เข้าห้องไปรอเพื่อน
         socket.emit('join-room', roomId, socket.id);
