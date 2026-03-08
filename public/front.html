@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบเยี่ยมญาติออนไลน์</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #1e1e1e; color: white; margin: 0; padding: 20px; }
+        .video-container { display: flex; flex-direction: column; align-items: center; gap: 15px; margin-top: 20px; }
+        
+        /* สไตล์กรอบวิดีโอ */
+        video { width: 100%; max-width: 400px; background: #000; border-radius: 12px; border: 2px solid #555; }
+        
+        /* วิดีโอตัวเองต้องกลับซ้ายขวาให้เหมือนส่องกระจก */
+        #local-video { transform: scaleX(-1); } 
+        
+        button { padding: 15px 30px; font-size: 18px; border-radius: 8px; background: #28a745; color: white; border: none; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        button:active { background: #218838; transform: translateY(2px); }
+        button:disabled { background: #666; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+
+    <h2>🎥 ห้องสนทนาออนไลน์</h2>
+    <p id="status-text">รอการเชื่อมต่อ...</p>
+
+    <button id="start-btn">📞 กดเพื่อเปิดกล้องและไมค์</button>
+
+    <div class="video-container">
+        <div>
+            <p>คุณ (ญาติ)</p>
+            <video id="local-video" autoplay playsinline muted></video> 
+        </div>
+        
+        <div>
+            <p>ผู้ต้องขัง (เรือนจำ)</p>
+            <video id="remote-video" autoplay playsinline></video>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <script>
+        // โค้ด JavaScript จะอยู่ตรงนี้! (ดูสเต็ปด้านล่าง)
+        // 1. เชื่อมต่อไปหา Backend Socket.io 
+// (ถ้าขึ้นเซิร์ฟเวอร์จริงต้องเปลี่ยน "/" เป็น "https://โดเมนของคุณ.com" นะครับ)
+
+const socket = io("https://prison-visit-booking.duckdns.org");
+const localVideo = document.getElementById('local-video');
+const remoteVideo = document.getElementById('remote-video');
+const startBtn = document.getElementById('start-btn');
+const statusText = document.getElementById('status-text');
+
+let localStream;
+let peerConnection;
+const roomId = "room-1234"; // ฟิกซ์ชื่อห้องไว้ทดสอบก่อน
+
+// 🌟 ตัวช่วยเจาะกำแพงเน็ตเวิร์ก (ใช้ STUN Server ฟรีของ Google)
+const configuration = {
+    'iceServers': [{'urls': 'stun:stun.l.google.com:19302'}]
+};
+
+// ==========================================
+// 1️⃣ เมื่อกดปุ่มเริ่มเปิดกล้อง
+// ==========================================
+startBtn.addEventListener('click', async () => {
+    try {
+        startBtn.disabled = true;
+        statusText.innerText = "กำลังขออนุญาตเปิดกล้อง...";
+
+        // ขอเปิดกล้องและไมค์
+        localStream = await navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: "user" }, 
+            audio: true 
+        });
+        
+        localVideo.srcObject = localStream;
+        startBtn.style.display = 'none';
+
+        // เข้าห้องไปรอเพื่อน
+        socket.emit('join-room', roomId, socket.id);
+        statusText.innerText = "✅ รออีกฝ่ายเข้ามาในห้อง...";
+
+    } catch (error) {
+        console.error("Error accessing media devices.", error);
+        statusText.innerText = "❌ ไม่สามารถเปิดกล้องได้";
+    }
+});
+
+// ==========================================
+// 2️⃣ ฟังก์ชันหลักสำหรับสร้างท่อเชื่อมต่อ (WebRTC)
+// ==========================================
+function createPeerConnection() {
+    peerConnection = new RTCPeerConnection(configuration);
+
+    // ยัดภาพและเสียงของเราเข้าไปในท่อ
+    localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+    });
+
+    // 🌟 เมื่อท่อเชื่อมกันติด และอีกฝ่ายส่งภาพมา!
+    peerConnection.ontrack = event => {
+        remoteVideo.srcObject = event.streams[0]; // เอาภาพเพื่อนไปใส่จอใหญ่
+        statusText.innerText = "🎥 เชื่อมต่อสำเร็จ! กำลังสนทนา...";
+    };
+
+    // แลกเปลี่ยนที่อยู่เน็ตเวิร์ก (ICE) กับอีกฝ่าย
+    peerConnection.onicecandidate = event => {
+        if (event.candidate) {
+            socket.emit('ice-candidate', event.candidate, roomId);
+        }
+    };
+}
+
+// ==========================================
+// 3️⃣ ลอจิกการรับสาย - โทรออก (Signaling)
+// ==========================================
+
+// กรณีที่ 1: เราอยู่ในห้องอยู่แล้ว มีคนใหม่เดินเข้ามา -> เราเป็นคนสร้างคำเชิญ (Offer)
+socket.on('user-connected', async (userId) => {
+    console.log("มีคนเข้ามาใหม่! กำลังส่งคำเชิญ (Offer)...");
+    createPeerConnection();
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    socket.emit('offer', offer, roomId);
+});
+
+// กรณีที่ 2: เราเพิ่งเดินเข้าห้องมา แล้วมีคนโยนคำเชิญมาให้ -> เราต้องตอบรับ (Answer)
+socket.on('offer', async (offer) => {
+    console.log("ได้รับคำเชิญ! กำลังตอบรับ (Answer)...");
+    if (!peerConnection) createPeerConnection();
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await peerConnection.createAnswer();
+    await peerConnection.setLocalDescription(answer);
+    socket.emit('answer', answer, roomId);
+});
+
+// กรณีที่ 3: คนที่เราเชิญไป เขาส่งคำตอบรับกลับมาแล้ว
+socket.on('answer', async (answer) => {
+    console.log("อีกฝ่ายตอบรับแล้ว! เตรียมวิดีโอคอล...");
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+});
+
+// กรณีที่ 4: แลกเปลี่ยนเส้นทางเน็ตเวิร์กเพื่อเจาะหากันให้เจอ
+socket.on('ice-candidate', async (candidate) => {
+    try {
+        if (peerConnection) {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        }
+    } catch (e) {
+        console.error('Error adding received ice candidate', e);
+    }
+});
+    </script>
+
+</body>
+</html>

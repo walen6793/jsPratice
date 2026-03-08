@@ -11,6 +11,7 @@ const cors = require('cors')
 const jwt = require('jsonwebtoken')
 const moment = require('moment')
 const xlsx = require('xlsx');
+const { Server } = require("socket.io");
 
 const checkAPI_key = require('./middleware/checkAPI_key')
 const checkAuth = require('./middleware/checkAuth')
@@ -27,7 +28,7 @@ const multer = require('multer')
 const path = require('path')
 const sharp = require('sharp')
 const fs = require('fs')
-const { request } = require('http')
+const http = require('http')
 
 const corsOptions = {
     origin: '*', // เปลี่ยนเป็น URL ของเว็บ Frontend คุณ (เช่น React/Vue)
@@ -38,21 +39,58 @@ const corsOptions = {
 
 app.use(cors(corsOptions))
 app.use(express.json()) // อ่านเป็นแบบ JSON
+
 app.use(checkAPI_key)
+const server = http.createServer(app);
 
-
-app.listen(port, async () => {
-    try{
-    const connection = await db.getConnection()
-    connection.release()
-    console.log(`Server is running on port ${port}`)
-    }catch (error){
-        console.error('Error connecting to the database : ',error.message)
-        process.exit(1)
+const io = new Server(server, {
+    cors: {
+        origin: "*", // อนุญาตให้หน้าเว็บ (Frontend) เชื่อมต่อเข้ามาได้
+        methods: ["GET", "POST"]
     }
-})
+});
 
 
+// 🌟 3. สร้างลอจิก "นายหน้าจับคู่ (Signaling)"
+io.on('connection', (socket) => {
+    console.log('⚡ มีอุปกรณ์เชื่อมต่อเข้ามาใหม่: ', socket.id);
+
+    // เมื่อมีคนขอเข้าห้อง (ญาติ หรือ ตู้เรือนจำ)
+    socket.on('join-room', (roomId, userId) => {
+        socket.join(roomId); // จับยัดเข้าห้อง
+        console.log(`👤 User ${userId} เข้าห้อง ${roomId}`);
+
+        // ตะโกนบอกคนอื่นๆ ในห้องว่า "เฮ้ย มีคนมาใหม่นะ!" (เพื่อเตรียมเชื่อมกล้อง)
+        socket.to(roomId).emit('user-connected', userId);
+
+        // จัดการลอจิกตอนส่งข้อมูล WebRTC (SDP / ICE Candidate) หากัน
+        socket.on('offer', (offer, room) => socket.to(room).emit('offer', offer));
+        socket.on('answer', (answer, room) => socket.to(room).emit('answer', answer));
+        socket.on('ice-candidate', (candidate, room) => socket.to(room).emit('ice-candidate', candidate));
+
+        // เมื่อมีคนกดวางสาย หรือเน็ตหลุด
+        socket.on('disconnect', () => {
+            console.log(`❌ User ${userId} ออกจากห้อง ${roomId}`);
+            socket.to(roomId).emit('user-disconnected', userId);
+        });
+    });
+});
+
+
+server.listen(port, async () => {
+    try {
+        // 1. เช็คการเชื่อมต่อ Database ก่อน
+        const connection = await db.getConnection();
+        connection.release();
+        console.log(`✅ เชื่อมต่อฐานข้อมูลสำเร็จ!`);
+        
+        // 2. แจ้งสถานะเซิร์ฟเวอร์
+        console.log(`🚀 Server และ WebRTC Signaling รันอยู่ที่พอร์ต ${port}`);
+    } catch (error) {
+        console.error('❌ Error connecting to the database : ', error.message);
+        process.exit(1); // สั่งปิดโปรแกรมถ้า DB พัง
+    }
+});
 
 const storage = multer.memoryStorage();
 //กรองไฟล์
