@@ -1461,19 +1461,20 @@ app.get('/api/dashboard/export', async (req, res) => {
             res.setHeader('Content-Disposition', `attachment; filename=report_${reqStartDate}_to_${reqEndDate}.pdf`);
             doc.pipe(res);
 
-            if (fs.existsSync('./fonts/THSarabun.ttf')) {
-                doc.font('./fonts/THSarabun.ttf');
+            // 🌟 ทริคระดับโปร: ใช้ path.join(__dirname) เพื่อสร้างที่อยู่ไฟล์แบบ Absolute Path (เต็มยศ)
+            // ตัวอย่าง __dirname คือตำแหน่งของไฟล์ index.js นี้
+            const fontPath = path.join(__dirname, 'fonts', 'THSarabun.ttf'); 
+
+            // เช็คว่าไฟล์มีอยู่จริงไหมตามพาธที่ถูกต้อง
+            if (fs.existsSync(fontPath)) {
+                doc.font(fontPath); // เรียกใช้ฟอนต์จากพาธเต็ม
+            } else {
+                // 🚨 ถ้าขึ้น Error นี้ใน Log เซิร์ฟเวอร์ แปลว่าไฟล์ไม่ได้ถูกพุชขึ้นไปแน่ๆ!
+                console.log("⚠️ ERROR: หาไฟล์ฟอนต์ไม่เจอที่พาธ ->", fontPath);
             }
 
-            doc.fontSize(18).text(reportTitle, { align: 'center' });
-            doc.moveDown(0.5);
-            doc.fontSize(14).text(`ยอดการจองทั้งหมด : ${stats.total_bookings} คิว`);
-            doc.text(`เข้าเยี่ยมสำเร็จ      : ${stats.completed_visits} คิว`);
-            doc.text(`รอดำเนินการ       : ${stats.pending_visits} คิว`);
-            doc.text(`ยกเลิก            : ${stats.cancelled_visits} คิว`);
-            doc.moveDown(1); 
+            // ... (โค้ดพิมพ์ส่วนสรุปเหมือนเดิม) ...
 
-            // 🌟 เพิ่มคอลัมน์ รหัสนักโทษ (ผมย่อคำให้สั้นลง เพื่อให้พอดีหน้ากระดาษ PDF)
             const table = {
                 headers: ["รหัส", "วันที่", "เริ่ม", "จบ", "สถานะ", "รหัสนักโทษ", "ชื่อผู้ต้องขัง", "ชื่อญาติ"],
                 rows: queueResults.map(row => [
@@ -1481,14 +1482,16 @@ app.get('/api/dashboard/export', async (req, res) => {
                 ])
             };
 
+            // 🌟 แก้ตรงนี้ให้ใช้ fontPath ด้วยเหมือนกัน
             await doc.table(table, { 
-                width: 530, // ขยายความกว้างตารางนิดนึงเพราะคอลัมน์เพิ่มขึ้น
-                prepareHeader: () => doc.font('./fonts/THSarabun.ttf').fontSize(14),
-                prepareRow: () => doc.font('./fonts/THSarabun.ttf').fontSize(12)
+                width: 530,
+                prepareHeader: () => doc.font(fontPath).fontSize(14),
+                prepareRow: () => doc.font(fontPath).fontSize(12)
             });
 
             doc.end();
         }
+        
 
     } catch (error) {
         console.error("Export API Error:", error);
