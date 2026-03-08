@@ -39,7 +39,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions))
 app.use(express.json()) // อ่านเป็นแบบ JSON
-
+app.use(express.static('public'));
 app.use(checkAPI_key)
 const server = http.createServer(app);
 
