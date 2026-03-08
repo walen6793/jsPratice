@@ -210,33 +210,29 @@ app.get('/api/notifications',checkAPI_key, checkAuth, async (req, res) => {
 
         // ดึง 20 รายการล่าสุด
         const [rows] = await db.query(
-            'SELECT title,message,created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 20',
+            'SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 20',
             [userId]
         );
 
-        const thaiDate = new Date(rows.created_at).toLocaleDateString('th-TH', {
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric'
-        });
-        
+       
         
 
         // นับจำนวนที่ยังไม่ได้อ่าน
-        const [unread] = await db.query(
+        const [unreadCountResult] = await db.query(
             'SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0',
             [userId]
         );
         
+        const formattedNotifications = rows.map(noti => ({
+            ...noti,
+            // เรียกใช้ฟังก์ชัน formatThaiDate ที่เราทำไว้
+            // ถ้ายังไม่ได้ก๊อปฟังก์ชันนั้นมา ให้เอาไปวางไว้บนสุดของไฟล์ด้วยนะครับ
+            created_at: formatThaiDate(noti.created_at) 
+        }));
 
         res.json({
-            notifications: {
-                title : rows.title,
-                message : rows.message,
-                created_at : thaiDate
-            },
-            
-            unreadCount: unread[0].count
+            notifications: formattedNotifications, // ส่งตัวที่ Format แล้วไป
+            unreadCount: unreadCountResult[0].count
         });
     } catch (error) {
         console.error("Notification Error:", error);
