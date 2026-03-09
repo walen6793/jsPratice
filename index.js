@@ -547,11 +547,13 @@ app.get('/admin/request/pending',checkAPI_key,checkAdminAuth,checkRole(['SUPER_A
                 ui.id_card_image,
                 ui.selfie_image,
                 ui.status,
+                rt.type_name_relationship_th,
                 ic.inmate_id
             FROM user_inmate_relationship ui
             LEFT JOIN user u ON ui.userId = u.userId
             LEFT JOIN prefixes p ON u.prefixe_id = p.id_prefixes
             JOIN incarcerations ic ON ui.inmateId = ic.inmate_rowID
+            LEFT JOIN relation_type AS rt ON ui.relationType_id = rt.id
             WHERE ui.status = 'PENDING'
             ORDER BY ui.id ASC
             LIMIT ? OFFSET ?
