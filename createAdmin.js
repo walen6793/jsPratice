@@ -5,10 +5,10 @@ const db = require('./config/db')
 async function createFirstAdmin(){
     try{
         const adminInfo = {
-            username : 'SuperAdminTKP',
+            username : 'visitationTKP',
             password : 'Admin@1234',
-            fullname : 'SuperAdmin_Somchai',
-            role : 'SUPER_ADMIN',
+            fullname : 'VISITIATION_SOMCHAI',
+            role : 'VISITATION',
         }
         console.log('กำลังสร้าง Super Admin ใหม่:', adminInfo.username)
 

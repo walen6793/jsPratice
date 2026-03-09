@@ -1403,7 +1403,7 @@ app.put('/admin/inmates/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_AD
 
     try {
         const inmateId = req.params.id; // ดึง ID จาก URL
-        const { id_card, prefix, firstname, lastname, gender, allow_visit,inmate_number, zoneText } = req.body;
+        const { id_card, prefix, firstname, lastname, gender, allow_visit, inmate_number, zoneText } = req.body;
 
         // 1. ตรวจสอบข้อมูลเบื้องต้น
         if (!firstname || !lastname || !inmate_number) {
@@ -1423,7 +1423,7 @@ app.put('/admin/inmates/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_AD
         if (id_card) {
             const [duplicateCheck] = await connection.execute(
                 `SELECT id FROM inmate WHERE id_card = ? AND id != ?`, 
-                [id_card, inmateId] // หาคนที่บัตรตรงกัน แต่ ID ไม่ใช่คนที่เรากำลังแก้อยู่
+                [id_card, inmateId]
             );
             
             if (duplicateCheck.length > 0) {
@@ -1434,7 +1434,7 @@ app.put('/admin/inmates/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_AD
             }
         }
 
-        // 3. วุ้นแปลภาษา: แปลงชื่อแดน และ คำนำหน้า ให้เป็น ID
+        // 3. แปลงชื่อแดน และ คำนำหน้า ให้เป็น ID
         const [zoneRows] = await connection.execute(`SELECT id, location_name FROM inmate_location`);
         const zoneMap = {};
         zoneRows.forEach(zone => zoneMap[zone.location_name.toString().trim()] = zone.id);
@@ -1450,17 +1450,23 @@ app.put('/admin/inmates/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_AD
             UPDATE inmate 
             SET id_card = ?, prefixeID = ?, firstname = ?, lastname = ?, allow_visit = ?, gender = ? 
             WHERE id = ?
-        `, [id_card, finalPrefixId, firstname, lastname, allow_visit,gender, inmateId]);
+        `, [id_card, finalPrefixId, firstname, lastname, allow_visit, gender, inmateId]);
 
-        // 5. 🌟 อัปเดตตารางรอง (incarcerations) ด้วยท่า UPSERT เหมือนเดิม!
-        // เผื่อในกรณีที่นักโทษคนนี้ข้อมูลเก่าเคยหลุด (ไม่มีเลขคดี) ก็จะสร้างใหม่ให้เลย
-        await connection.execute(`
-            INSERT INTO incarcerations (inmate_rowID, inmate_id, current_location_id) 
-            VALUES (?, ?, ?)
-            ON DUPLICATE KEY UPDATE 
-                
-                current_location_id = VALUES(current_location_id)
-        `, [inmateId, inmate_number, finalZoneId]);
+        // 5. 🌟 อัปเดตตารางรอง (incarcerations) แบบไม่ให้งอก
+        const [checkIncarc] = await connection.execute(`SELECT id FROM incarcerations WHERE inmate_rowID = ?`, [inmateId]);
+
+        if (checkIncarc.length > 0) {
+            await connection.execute(`
+                UPDATE incarcerations 
+                SET inmate_id = ?, current_location_id = ? 
+                WHERE inmate_rowID = ?
+            `, [inmate_number, finalZoneId, inmateId]);
+        } else {
+            await connection.execute(`
+                INSERT INTO incarcerations (inmate_rowID, inmate_id, current_location_id) 
+                VALUES (?, ?, ?)
+            `, [inmateId, inmate_number, finalZoneId]);
+        }
 
         // เซฟการเปลี่ยนแปลง
         await connection.commit();
@@ -1475,12 +1481,10 @@ app.put('/admin/inmates/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_AD
                 message: "ข้อมูลนี้ (เช่น เลขบัตร หรือ รหัสนักโทษ) มีซ้ำในระบบแล้ว กรุณาตรวจสอบอีกครั้ง" 
             });
         }
-
-
         res.status(500).json({ message: "เกิดข้อผิดพลาดในการแก้ไขข้อมูลนักโทษ" });
     } finally {
         if (connection) {
-            connection.release(); // ปล่อย Connection เสมอ
+            connection.release();
         }
     }
 });
@@ -2330,7 +2334,7 @@ app.get('/inmate_info', checkAPI_key,checkAuth, async (req,res) => {
 
     try{
         const myUserId = req.user.userId
-        const [inmate] = await db.execute('SELECT u.userId, u.inmateId , p.prefixes_nameTh , i.firstname ,i.lastname , i.inmate_photo_url ,i.allow_visit ,ic.inmate_id AS inmate_number FROM user_inmate_relationship AS u JOIN incarcerations AS ic ON u.inmateId = ic.inmate_rowID LEFT JOIN inmate AS i ON u.inmateId = i.id LEFT JOIN prefixes AS p ON i.prefixeID = p.id_prefixes WHERE u.userId = ?',[myUserId])
+        const [inmate] = await db.execute(`SELECT u.userId, u.inmateId , p.prefixes_nameTh , i.firstname ,i.lastname , i.inmate_photo_url ,i.allow_visit ,ic.inmate_id AS inmate_number FROM user_inmate_relationship AS u JOIN incarcerations AS ic ON u.inmateId = ic.inmate_rowID LEFT JOIN inmate AS i ON u.inmateId = i.id LEFT JOIN prefixes AS p ON i.prefixeID = p.id_prefixes WHERE u.userId = ? AND u.status = 'APPROVED'`,[myUserId])
         
         if (inmate.length === 0){
             res.status(200).json({
