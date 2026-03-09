@@ -440,7 +440,7 @@ app.post('/user/claim-inmate', checkAPI_key, checkAuth, upload.fields([
         // 2. 🌟 Map ความสัมพันธ์ (String) เป็น ID (Number)
         const trimmedRelation = relation.trim();
         // แก้ไขชื่อตาราง 'relations_type' และคอลัมน์ให้ตรงกับฐานข้อมูลของคุณ
-        const [relationRows] = await db.execute('SELECT id FROM relations_type WHERE type_name_relationship_th = ?', [trimmedRelation]);
+        const [relationRows] = await db.execute('SELECT id FROM relation_type WHERE type_name_relationship_th = ?', [trimmedRelation]);
         
         if (relationRows.length === 0) {
             throw new ValidationError(`ไม่พบประเภทความสัมพันธ์ '${trimmedRelation}' ในระบบ กรุณาตรวจสอบอีกครั้ง`, 400);
