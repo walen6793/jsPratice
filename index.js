@@ -1709,7 +1709,7 @@ app.get('/', async(req,res) => {
     
     
 })
-app.post('/check-idcard', checkAPI_key,async(req,res) => {
+app.post('/check-idcard', checkAPI_key, async(req,res) => {
     try{
         let newUser = req.body
         if (newUser.id_card == null || newUser.id_card == undefined){
@@ -1721,33 +1721,27 @@ app.post('/check-idcard', checkAPI_key,async(req,res) => {
 
         const trimmedID_Card = newUser.id_card.trim()
 
-
         if (trimmedID_Card.length != 13){
             throw new ValidationError("ID card ต้องมีความยาว 13 ตัวอักษร")
         }
         
-        const [check_SQL] = await db.execute('SELECT p.prefixes_nameTh, r.visitor_prefixe, r.visitor_firstname, r.visitor_lastname, r.userId AS claimed_user_id,u.id_card AS existing_user_account_id FROM user_inmate_relationship AS r LEFT JOIN user AS u ON r.visitor_id_card = u.id_card LEFT JOIN prefixes AS p ON r.visitor_prefixe = p.id_prefixes WHERE r.visitor_id_card = ?;' , [trimmedID_Card])
+        // 🌟 ค้นหาแค่ตาราง user ว่าบัตรนี้เคยสมัครแอปไปหรือยัง
+        const [check_SQL] = await db.execute('SELECT id_card, firstname, lastname FROM user WHERE id_card = ?;' , [trimmedID_Card])
         
-        if (check_SQL.length === 0){
-            throw new ValidationError("ID card นี้ไม่ได้ลงทะเบียนเป็นญาติผู้ต้องขัง")
-        }
-        if (check_SQL[0].existing_user_account_id != null){
-            
+        if (check_SQL.length > 0){
+            // ถ้ามีในระบบแล้ว แปลว่าซ้ำ สมัครไม่ได้ ให้เด้งไปหน้า Login
             return res.status(409).json({
-                message : "ID card นี้มีบัญชีผู้ใช้แล้ว",
-                id_card : trimmedID_Card,
-                prefixe : check_SQL[0].prefixes_nameTh ,
-                firstname : check_SQL[0].visitor_firstname,
-                lastname : check_SQL[0].visitor_lastname
+                message : "เลขบัตรประชาชนนี้มีบัญชีผู้ใช้งานในระบบแล้ว กรุณาเข้าสู่ระบบ",
+                id_card : check_SQL[0].id_card,
+                firstname : check_SQL[0].firstname,
+                lastname : check_SQL[0].lastname
             })
         }
-        const data = check_SQL[0]
+
+        // ถ้าค้นหาไม่เจอ แสดงว่าบัตรนี้ยังไม่เคยสมัคร ให้ผ่านได้เลย
         return res.status(200).json({
-            message : "ID card นี้สามารถใช้ได้",
-            id_card : data.visitor_id_card,
-            prefixe : data.prefixes_nameTh ,
-            firstname : data.visitor_firstname,
-            lastname : data.visitor_lastname
+            message : "เลขบัตรประชาชนนี้สามารถใช้สมัครสมาชิกได้",
+            id_card : trimmedID_Card
         })
 
     }catch (error){
@@ -1757,64 +1751,53 @@ app.post('/check-idcard', checkAPI_key,async(req,res) => {
         }
         res.status(500).json({message: 'Internal Server Error'})
     }
-    
 })
 
-
-
-
-app.post('/register', checkAPI_key,async(req,res) => {
+app.post('/register', checkAPI_key, async(req,res) => {
     let connection;
     let newUser = req.body
     let password = newUser.password
 
-    try{
-        
+    try {
         if (newUser.id_card == undefined || newUser.id_card.length != 13){
             throw new ValidationError("ID card ต้องมีความยาว 13 ตัวอักษร")
         }
         if (newUser.firstname == undefined || newUser.lastname == undefined || newUser.firstname.length == 0 || newUser.lastname.length == 0 || newUser.firstname.trim() == '' || newUser.lastname.trim() == ''){
             throw new ValidationError("ชื่อหรือนามสกุลไม่ถูกต้อง")
         }
-        
         if (password == undefined){
             throw new ValidationError('Password ห้ามเป็นค่าว่าง หรือ มีเว้นวรรค')
         }
 
-        //check password
-        
+        // เช็ครหัสผ่าน
         const trimmedPassword = password.trim()
         const hasnonAscii = /[^\x00-\x7F]/.test(trimmedPassword)
         if (hasnonAscii){
             throw new ValidationError('Password ต้องเป็นตัวอักษรภาษาอังกฤษหรือตัวเลขเท่านั้น')
         }
-
         if (trimmedPassword == ''){
             throw new ValidationError('Password ห้ามเป็นค่าว่าง หรือ มีเว้นวรรค')
         }
-
         if (trimmedPassword.length < 8){
             throw new ValidationError('Password นี้ต้องมีความยาวอย่างน้อย 8 ตัวอักษร')
-                
-        } if (trimmedPassword.length > 50){
+        } 
+        if (trimmedPassword.length > 50){
             throw new ValidationError('Password นี้ต้องมีความยาวไม่เกิน 50 ตัวอักษร')
         }
 
-
+        // เช็คเบอร์โทร
         if (newUser.phone == undefined || newUser.phone.length != 10) {
             throw new ValidationError("เบอร์โทรศัพท์ต้องมีความยาว 10 ตัวอักษร")
         }
-        if (newUser.phone.startsWith('0' ) == false){
+        if (newUser.phone.startsWith('0') == false){
             throw new ValidationError("เบอร์โทรศัพท์ต้องขึ้นต้นด้วยเลข 0")
         }
-                
         if (typeof newUser.phone != 'string'){
             throw new ValidationError("เบอร์โทรศัพท์ต้องเป็น string")
         }
         if (typeof newUser.firstname != 'string'){
             throw new ValidationError("ชื่อ ต้องเป็นตัวอักษร")
         }
-        
         if (typeof newUser.lastname != 'string'){
             throw new ValidationError("นามสกุล ต้องเป็นตัวอักษร")
         }
@@ -1823,123 +1806,84 @@ app.post('/register', checkAPI_key,async(req,res) => {
         }
         
         connection = await db.getConnection()
-        console.log("ยืม "+connection.threadId)
         await connection.beginTransaction()
-        console.log("เริ่มทำงาน "+connection.threadId)
 
-
-        //check id_card
-        const [check_SQL] = await connection.execute('SELECT r.visitor_prefixe, r.visitor_firstname, r.visitor_lastname, r.userId AS claimed_user_id,u.id_card AS existing_user_account_id FROM user_inmate_relationship AS r LEFT JOIN user AS u ON r.visitor_id_card = u.id_card WHERE r.visitor_id_card = ? FOR UPDATE;' , [newUser.id_card])
-        console.log("ผลลัพธ์ของการตรวจสอบ ID card: " , check_SQL);
-
+        // 🌟 1. แมพคำนำหน้าชื่อ (String) ให้เป็น ID_PREFIXES (Number)
+        const trimmedPrefix = newUser.prefixe.trim();
+        const [prefixRows] = await connection.execute('SELECT id_prefixes FROM prefixes WHERE prefixes_nameTh = ?', [trimmedPrefix]);
         
-        if (check_SQL.length === 0){
-            throw new ValidationError("ID card นี้ไม่ได้ลงทะเบียนเป็นญาติผู้ต้องขัง")
+        if (prefixRows.length === 0) {
+            // ถ้าพิมพ์คำนำหน้ามาแปลกๆ แล้วหาในฐานข้อมูลไม่เจอ
+            throw new ValidationError("คำนำหน้าชื่อไม่ถูกต้อง หรือไม่มีในระบบ");
         }
-        if (check_SQL[0].existing_user_account_id != null){
-            throw new ValidationError("ID card นี้มีบัญชีผู้ใช้แล้ว")
+        const finalPrefixId = prefixRows[0].id_prefixes; // ได้ ID ตัวเลขมาแล้ว!
+
+        // 🌟 2. ตรวจสอบว่า ID Card นี้มีบัญชีผู้ใช้ในระบบแล้วหรือยัง
+        const [existingUser] = await connection.execute('SELECT id_card FROM user WHERE id_card = ? FOR UPDATE;' , [newUser.id_card])
+        if (existingUser.length > 0){
+            throw new ValidationError("เลขบัตรประชาชนนี้มีบัญชีผู้ใช้งานในระบบแล้ว กรุณาเข้าสู่ระบบ")
         }
 
-        //checkFirstname
-        if(check_SQL[0].visitor_prefixe != newUser.prefixe){
-            throw new ValidationError("คำนำหน้าชื่อไม่ตรงกับที่ลงทะเบียนเป็นญาติผู้ต้องขัง")
-        }
-        
-        if(check_SQL[0].visitor_firstname != newUser.firstname.trim()){
-            throw new ValidationError("ชื่อไม่ตรงกับที่ลงทะเบียนเป็นญาติผู้ต้องขัง")
-               
-        }
-        if(check_SQL[0].visitor_lastname != newUser.lastname.trim()){
-            throw new ValidationError("นามสกุลไม่ตรงกับที่ลงทะเบียนเป็นญาติผู้ต้องขัง")
-        }
-
-    
-        //checkPhone
+        // 🌟 3. ตรวจสอบเบอร์โทรศัพท์ซ้ำ
         const [checkPhone_SQL] = await connection.execute('SELECT phone FROM user WHERE phone = ? ;', [newUser.phone])
-        
         if (checkPhone_SQL.length > 0){
-            throw new ValidationError("เบอร์โทรศัพท์นี้มีผู้ใช้แล้ว")
+            throw new ValidationError("เบอร์โทรศัพท์นี้มีผู้ใช้งานแล้ว")
         }
-        
 
-        
-        
-        console.log("Password สามารถใช้ได้")
-    
-        console.log("ID card และ Phone สามารถใช้ได้")
-
-        //hash password
+        // 🌟 4. Hash password ด้วย bcrypt
         const saltRounds = 10
         const hashedPassword = await bcrypt.hash(trimmedPassword, saltRounds)
         
-
-
-        const sql = 'INSERT INTO `visitation`.`user` (`id_card`,`prefixe_id`, `firstname`, `lastname`, `hashed_password`, `create_time`, `phone`, `is_active`, `last_active_at`) VALUES (?, ?, ?, ?, ?, NOW(), ?,1,NULL);'
-        const params = [newUser.id_card,newUser.prefixe,newUser.firstname.trim(),newUser.lastname.trim(),hashedPassword,newUser.phone]
+        // 🌟 5. สร้างบัญชีใหม่ (ใช้ finalPrefixId แทน newUser.prefixe)
+        const sql = 'INSERT INTO `user` (`id_card`,`prefixe_id`, `firstname`, `lastname`, `hashed_password`, `create_time`, `phone`, `is_active`, `last_active_at`) VALUES (?, ?, ?, ?, ?, NOW(), ?, 1, NULL);'
+        
+        // ส่งตัวแปร finalPrefixId เข้าไปบันทึกลง Database
+        const params = [newUser.id_card, finalPrefixId, newUser.firstname.trim(), newUser.lastname.trim(), hashedPassword, newUser.phone]
         const result = await connection.execute(sql, params)
-        console.log("ผลลัพธ์การสร้างผู้ใช้ใหม่: ", result[0])
-
-        const update_relationship_sql = 'UPDATE user_inmate_relationship SET userId = ? WHERE visitor_id_card = ?'
-        const update_relationship_params = [result[0].insertId, newUser.id_card]
-        const update_relationship_result  = await connection.execute(update_relationship_sql, update_relationship_params)
-        if (update_relationship_result[0].affectedRows === 0){
-            throw new ValidationError("ไม่สามารถอัปเดตความสัมพันธ์ได้")
-        }
         
         await connection.commit()
-
-
         const data = result[0]
         
         return res.status(201).json({
-            message : 'User created successfully',
+            message : 'สมัครสมาชิกสำเร็จ! คุณสามารถเข้าสู่ระบบและส่งคำขอผูกรายชื่อผู้ต้องขังได้เลย',
             data : {
                 id : data.insertId,
                 id_card : newUser.id_card,
-                prefixe : newUser.prefixe,
+                prefixe : trimmedPrefix, // ส่งชื่อคำนำหน้า (String) กลับไปให้ Frontend โชว์สวยๆ
                 firstname : newUser.firstname.trim(),
                 lastname : newUser.lastname.trim(),
                 phone : newUser.phone
             }
-            
-
         })
         
     }catch (error){
-            console.error('Error during transaction:', error)
-
-            if (connection){
-                try{
-                    await connection.rollback()
-                    
-                }catch (err){
-                    console.error('Error during rollback:', err)
-                }
+        console.error('Error during registration:', error)
+        if (connection){
+            try{
+                await connection.rollback()
+            }catch (err){
+                console.error('Error during rollback:', err)
             }
-            if (error instanceof ValidationError){
-                return res.status(error.statusCode).json({message: error.message})
+        }
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        if (!res.headersSent){
+            res.status(500).json({message: 'Internal Server Error'})
+        }
+    }finally{
+        if (connection){
+            try{
+                connection.release()
+            }catch (err){
+                console.error('Error during release:', err)
             }
-
-            if (!res.headersSent){
-                res.status(500).json({message: 'Internal Server Error'})
-            }
-            
-        
-        }finally{
-            if (connection){
-                try{
-                    connection.release()
-                    console.log("คืน "+connection.threadId)
-                }catch (err){
-                    console.error('Error during release:', err)
-                }
-            }
+        }
     }
-    
 })
 
 
-app.post('/login', checkAPI_key,async(req,res) => {
+app.post('/login', checkAPI_key, async(req,res) => {
     try{
         const { id_card, password ,device_token, device_type} = req.body
         if (!id_card || typeof id_card != 'string' || !password || typeof password != 'string'){
@@ -1969,8 +1913,6 @@ app.post('/login', checkAPI_key,async(req,res) => {
             throw new ValidationError("บัญชีของคุณโดนระงับ",401)
         }
         
-
-
         // สร้าง token
         const payload = { userId: data.userId, id_card: data.id_card }
         const secret_key = process.env.JWT_SECRET
@@ -1979,11 +1921,23 @@ app.post('/login', checkAPI_key,async(req,res) => {
 
         const update_last_active = await db.execute("UPDATE user SET last_active_at = NOW() WHERE userId = ? ",[data.userId])
 
+        // 🌟 แก้ไข: เติม await ให้แล้ว ป้องกันบั๊กการรันแบบ Asynchronous ที่ไม่สมบูรณ์
         if (device_token){
-            db.execute("INSERT INTO device (user_id,device_info,device_type,last_active_at) VALUES (?,?,?,NOW()) ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), last_active_at = NOW()",[data.userId,device_token,device_type || 'unknown'])
+            await db.execute("INSERT INTO device (user_id,device_info,device_type,last_active_at) VALUES (?,?,?,NOW()) ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), last_active_at = NOW()",[data.userId,device_token,device_type || 'unknown'])
         }
         if (update_last_active.affectedRows === 0){
             throw new ValidationError("ไม่สามารถ Update เวลาที่ใช้งานล่าสุดได้")
+        }
+
+        // 🌟 เพิ่มเติมฟีเจอร์สำหรับ Flow ใหม่: ดึงสถานะการผูกบัญชีล่าสุดส่งไปให้แอปด้วยเลย
+        const [relRows] = await db.execute('SELECT status, reject_reason FROM user_inmate_relationship WHERE userId = ? ORDER BY id DESC LIMIT 1', [data.userId]);
+        
+        let claim_status = 'NONE'; // ค่าเริ่มต้น: ยังไม่เคยผูกนักโทษ
+        let reject_reason = null;
+
+        if (relRows.length > 0) {
+            claim_status = relRows[0].status; // PENDING, APPROVED หรือ REJECTED
+            reject_reason = relRows[0].reject_reason;
         }
         
         return res.json({
@@ -1991,8 +1945,10 @@ app.post('/login', checkAPI_key,async(req,res) => {
             message2 : 'ยินดีต้อนรับ คุณ ' + data.firstname,
             id_card : data.id_card,
             token : token,
-            isFirst_login : isFirst_login
-
+            isFirst_login : isFirst_login,
+            // 🌟 ส่ง 2 ตัวนี้ไปให้ Frontend ตัดสินใจว่าจะพาไปหน้าไหนต่อ
+            claim_status : claim_status, 
+            reject_reason : reject_reason
         })
 
     }catch (error){
@@ -2001,9 +1957,6 @@ app.post('/login', checkAPI_key,async(req,res) => {
             return res.status(error.statusCode).json({message: error.message})
         }
         res.status(500).json({message: 'Internal Server Error'})
-        
-
-        
     }
 })
 
@@ -3550,133 +3503,83 @@ app.put('/admin/slots/:id/cancel',checkAPI_key,checkAdminAuth,checkRole(['SUPER_
 }
 )
 
-app.post('/admin/generate-slots',checkAPI_key,checkAuth,async(req,res) => {
-    let connection;
-    try{
-        const {year, month} = req.body
-        if (!year || !month ){
-            throw new ValidationError("กรุณาระบุ year และ month")
-        }
-        const capasity_per_slot = 1
-        const timeSlots = [
-            {starts_at : '09:00:00',end: '09:15:00',device_id : 3,allowed_gender : 'MALE'},
-            {starts_at : '10:15:00',end: '10:30:00',device_id : 3,allowed_gender : 'MALE'},
-            {starts_at : '11:15:00',end: '11:30:00',device_id : 3,allowed_gender : 'FEMALE'},
-            {starts_at : '12:15:00',end: '12:30:00',device_id : 3,allowed_gender : 'MALE'},
-            {starts_at : '13:15:00',end: '13:30:00',device_id : 3,allowed_gender : 'MALE'},
-            {starts_at : '14:15:00',end: '14:30:00',device_id : 3,allowed_gender : 'FEMALE'},
+// app.post('/admin/generate-slots',checkAPI_key,checkAuth,async(req,res) => {
+//     let connection;
+//     try{
+//         const {year, month} = req.body
+//         if (!year || !month ){
+//             throw new ValidationError("กรุณาระบุ year และ month")
+//         }
+//         const capasity_per_slot = 1
+//         const timeSlots = [
+//             {starts_at : '09:00:00',end: '09:15:00',device_id : 3,allowed_gender : 'MALE'},
+//             {starts_at : '10:15:00',end: '10:30:00',device_id : 3,allowed_gender : 'MALE'},
+//             {starts_at : '11:15:00',end: '11:30:00',device_id : 3,allowed_gender : 'FEMALE'},
+//             {starts_at : '12:15:00',end: '12:30:00',device_id : 3,allowed_gender : 'MALE'},
+//             {starts_at : '13:15:00',end: '13:30:00',device_id : 3,allowed_gender : 'MALE'},
+//             {starts_at : '14:15:00',end: '14:30:00',device_id : 3,allowed_gender : 'FEMALE'},
 
-        ]
-        //คำนวณจำนวนวันในเดือน
-        const daysInMonth = new Date(year,month,0).getDate()
-        const bulkValues = []
-        const current_booking = 0;
-        const status = 'OPEN'
+//         ]
+//         //คำนวณจำนวนวันในเดือน
+//         const daysInMonth = new Date(year,month,0).getDate()
+//         const bulkValues = []
+//         const current_booking = 0;
+//         const status = 'OPEN'
 
-        //ลูป
-        for (let day = 1; day <= daysInMonth; day++){
-            const currentDate = new Date(year, month - 1 ,day)
-            console.log("กำลังประมวลผลวันที่: ", currentDate)
-            const dayOfWeek = currentDate.getDay()
-            if (dayOfWeek === 0 || dayOfWeek === 6){
-                continue
-            }
-            const dateString = currentDate.toISOString().split('T')[0];
-            timeSlots.forEach(slot => {
-                bulkValues.push([dateString, slot.starts_at, slot.end,capasity_per_slot,current_booking,status,slot.device_id,slot.allowed_gender])
+//         //ลูป
+//         for (let day = 1; day <= daysInMonth; day++){
+//             const currentDate = new Date(year, month - 1 ,day)
+//             console.log("กำลังประมวลผลวันที่: ", currentDate)
+//             const dayOfWeek = currentDate.getDay()
+//             if (dayOfWeek === 0 || dayOfWeek === 6){
+//                 continue
+//             }
+//             const dateString = currentDate.toISOString().split('T')[0];
+//             timeSlots.forEach(slot => {
+//                 bulkValues.push([dateString, slot.starts_at, slot.end,capasity_per_slot,current_booking,status,slot.device_id,slot.allowed_gender])
 
-            })
-        }
-        if (bulkValues.length > 0 ){
-            connection = await db.getConnection()
-            await connection.beginTransaction()
+//             })
+//         }
+//         if (bulkValues.length > 0 ){
+//             connection = await db.getConnection()
+//             await connection.beginTransaction()
 
-            await connection.query(`
-                INSERT INTO visit_slot (visit_date,starts_at,ends_at,capacity,current_booking,status,device_id,allowed_gender) VALUES ?
+//             await connection.query(`
+//                 INSERT INTO visit_slot (visit_date,starts_at,ends_at,capacity,current_booking,status,device_id,allowed_gender) VALUES ?
                 
-                `,[bulkValues])
+//                 `,[bulkValues])
 
-            await connection.commit()
-            res.status(201).json({
-                message : 'สร้างช่องเวลาการเยี่ยมชมสำเร็จ',
-                total_slots_created : 'สร้างรอบของสำเร็จจำนวน' + bulkValues.length + 'รอบ',
+//             await connection.commit()
+//             res.status(201).json({
+//                 message : 'สร้างช่องเวลาการเยี่ยมชมสำเร็จ',
+//                 total_slots_created : 'สร้างรอบของสำเร็จจำนวน' + bulkValues.length + 'รอบ',
 
-            })
-        }else{
-            throw new ValidationError("ไม่มีวันใดในเดือนนี้ที่สามารถสร้างช่องเวลาได้")
-        }
+//             })
+//         }else{
+//             throw new ValidationError("ไม่มีวันใดในเดือนนี้ที่สามารถสร้างช่องเวลาได้")
+//         }
             
         
-    }catch (error){
-        console.log(error)
-        if (connection){
-            await connection.rollback()
-        }
-        if (error instanceof ValidationError){
-            return res.status(error.statusCode).json({message: error.message})
-        }
-        res.status(500).json({message: 'Internal Server Error'})
-    }finally{
-        if (connection){
-            try{
-                connection.release()
-                console.log("คืน "+connection.threadId)
-            }catch (err){
-                console.error('Error during release:', err)
-            }
-        }
-    }
-})
+//     }catch (error){
+//         console.log(error)
+//         if (connection){
+//             await connection.rollback()
+//         }
+//         if (error instanceof ValidationError){
+//             return res.status(error.statusCode).json({message: error.message})
+//         }
+//         res.status(500).json({message: 'Internal Server Error'})
+//     }finally{
+//         if (connection){
+//             try{
+//                 connection.release()
+//                 console.log("คืน "+connection.threadId)
+//             }catch (err){
+//                 console.error('Error during release:', err)
+//             }
+//         }
+//     }
+// })
 
 
 
-app.get('/users',(req,res) => {
-    res.json(arr)
-})
-
-{
-    "ฉีดวัคซีนแมว 240 , ตรวจค่าเลือด."
-    "ฉีดวัคซีน 350"
-}
-
-
-
-app.put('/update/:id',(req,res) => {
-    let id = req.params.id
-    let updatedUser = req.body
-    let findIndex = arr.findIndex(user => user.id == id)
-
-    //ถ้าใช้ put ควรมีข้อมูลเดิมเพื่ออัปเดตดเมื่อไม่มีข้อมูลใหม่ด้วย เพราะมันจะอัพเดตทั้งหมด
-    arr[findIndex].firstname = updatedUser.firstname || arr[findIndex].firstname
-    arr[findIndex].lastname = updatedUser.lastname || arr[findIndex].lastname
-    res.json({
-        message : 'User updated',
-        index : findIndex,
-        updatedUser : arr[findIndex]
-    })
-    
-})
-
-app.delete('/delete/:id',(req,res) => {
-    let id = req.params.id
-    let findIndex = arr.findIndex(user => user.id == id)
-    if (findIndex === -1){
-        return res.status(404).json({message: 'User not found'})
-    }
-    arr.splice(findIndex,1)
-    res.json({
-        message : 'User deleted',
-        index : findIndex
-    })
-})
-
-app.get('/users/:id',(req,res) => {
-    let id = req.params.id
-    let findIndex = arr.findIndex(user => user.id == id)
-    if (findIndex === -1){
-        return res.status(404).json({
-            message: 'User not found'
-        })
-    }
-    res.json(arr[findIndex].firstname)
-})
