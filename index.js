@@ -282,75 +282,202 @@ app.put('/api/notifications/read/:id', checkAPI_key,checkAuth, async (req, res) 
 
 
 
-app.post('/user/claim-inmate', checkAPI_key,checkAuth,upload.fields([
-    {name : 'id_card_image',maxCount:1},
-    {name: 'selfie_image',maxCount:1}
+// app.post('/user/claim-inmate', checkAPI_key,checkAuth,upload.fields([
+//     {name : 'id_card_image',maxCount:1},
+//     {name: 'selfie_image',maxCount:1}
 
-]),async(req,res) => {
+// ]),async(req,res) => {
+//     try{
+//         const userId = req.user.userId;
+//         const {inmate_id, visitor_id_card,} =req.body
+
+//         if (!inmate_id || !visitor_id_card){
+//             throw new ValidationError("กรุณาระบุ inmate_id และ visitor_id_card",400);
+//         }
+//         if (!req.files || !req.files['id_card_image'] || !req.files['selfie_image']){
+//             throw new ValidationError("กรุณาอัปโหลดรูปภาพบัตรประชาชนและรูปภาพเซลฟี่",400);
+//         }
+//         const [inmateRows] = await db.execute(`
+//             SELECT inmate_rowID 
+//             FROM incarcerations 
+//             WHERE inmate_id = ?
+//         `, [inmate_id]);
+//         if (inmateRows.length === 0) {
+//             throw new ValidationError("ไม่พบข้อมูลรหัสผู้ต้องขังนี้ในระบบ กรุณาตรวจสอบรหัสอีกครั้ง", 404);
+//         }
+//         const internalInmateId = inmateRows[0].inmate_rowID;
+
+        
+
+//         const [rows] = await db.execute(`
+//             SELECT ui.id,ui.userId,ui.status,ic.inmate_id AS inmate_number, ui.id_card_image, ui.selfie_image
+//             FROM user_inmate_relationship AS ui
+//             JOIN incarcerations AS ic ON ui.inmateId = ic.inmate_rowID
+//             WHERE ic.inmate_rowID = ? AND ui.visitor_id_card = ?
+
+            
+//             `,[internalInmateId,visitor_id_card]);
+
+//         let relationshipId;
+//         let isNewRequest = false;
+//         let oldImages = null;
+//         if (rows.length > 0){
+//             const relationship = rows[0];
+
+//             if (relationship.userId !== null && relationship.userId !== userId) {
+//                 throw new ValidationError("บัตรประชาชนนี้ถูกใช้งานโดยบัญชีอื่นไปแล้ว กรุณาติดต่อเจ้าหน้าที่", 400);
+//             }
+//             if (relationship.status === 'APPROVED' || relationship.status === 'PENDING') {
+//                 console.log("rela : ",relationship.id)
+//                 throw new ValidationError("คุณได้ส่งคำขอไปแล้ว หรือสถานะได้รับการอนุมัติแล้ว ไม่สามารถส่งซ้ำได้", 400);
+//             }
+//             relationshipId = relationship.id;
+//             oldImages = {
+//                 id_card: relationship.id_card_image,
+//                 selfie: relationship.selfie_image
+//             }
+//         }else {
+//             // 🟡 กรณีที่ 2: "ไม่มีชื่อในระบบ" (นักโทษลืมแจ้ง หรืออยากเพิ่มชื่อใหม่)
+//             isNewRequest = true; // เปิด Flag ว่านี่คือการสร้างคำร้องใหม่
+//         }
+//         const processAndSaveImage = async (fileBuffer, fieldName) => {
+//             const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+//             const filename = `${fieldName}-${uniqueSuffix}.jpg`;
+//             const filepath = path.join(process.cwd(), 'uploads', filename);
+//             console.log("🕵️‍♂️ ตำแหน่งไฟล์รูปที่แท้จริงคือ: ", filepath);
+
+//             await sharp(fileBuffer)
+//                 .resize({ width: 1000, withoutEnlargement: true })
+//                 .jpeg({ quality: 70 })
+//                 .toFile(filepath);
+
+//             return filename;
+//         };
+
+//         const [idCardFilename, selfieFilename] = await Promise.all([
+//             processAndSaveImage(req.files['id_card_image'][0].buffer, 'id_card_image'),
+//             processAndSaveImage(req.files['selfie_image'][0].buffer, 'selfie_image')
+//         ]);
+
+//        if (!isNewRequest){
+//         await db.execute(`
+//             UPDATE user_inmate_relationship 
+//             SET userId = ?,
+//             status = 'PENDING',
+//             id_card_image = ?,
+//             selfie_image = ?
+//             WHERE id = ?
+//             `,[userId,idCardFilename,selfieFilename,relationshipId])
+
+//             const deleteOldFile = (filename) => {
+//                 if(filename) {
+//                     const filePath = path.join(process.cwd(),'uploads',filename);
+                    
+//                     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+//                 }
+//             }
+//             if (oldImages){
+//                 deleteOldFile(oldImages.id_card);
+//                 deleteOldFile(oldImages.selfie);
+//             }
+//        }else{
+//             const [insertResult] = await db.execute(`
+//                 INSERT INTO user_inmate_relationship
+//                 (userId, inmateId,visitor_id_card,visitor_firstname,visitor_lastname,status,id_card_image,selfie_image)
+//                 VALUES (?,?,?,?,?,'PENDING',?,?)
+                
+                
+                
+//                 `,[userId,internalInmateId,visitor_id_card,null,null, idCardFilename, selfieFilename])
+//                 relationshipId = insertResult.insertId;
+
+//        }
+        
+//         res.status(200).json({
+
+//             message : 'ส่งคำขอสำเร็จ! กรุณารอเจ้าหน้าที่ตรวจสอบรูปภาพหลักฐาน',
+//             data : {
+//                 relationship_id : relationshipId,
+//                 status : 'PENDING'
+//             }
+//         })
+
+        
+
+//     }catch (error){
+//         console.error(error)
+//         if (error instanceof ValidationError){
+//             return res.status(error.statusCode || 400).json({message: error.message})
+//         }
+//         return res.status(500).json({message: 'Internal Server Error'})
+//     }
+
+// });
+
+// ==========================================
+// 📸 API สำหรับญาติส่งคำขอผูกรายชื่อผู้ต้องขัง (พร้อมระบุความสัมพันธ์)
+// ==========================================
+app.post('/user/claim-inmate', checkAPI_key, checkAuth, upload.fields([
+    {name: 'id_card_image', maxCount: 1},
+    {name: 'selfie_image', maxCount: 1}
+]), async(req,res) => {
     try{
         const userId = req.user.userId;
-        const {inmate_id, visitor_id_card,} =req.body
+        const { inmate_number, relation } = req.body; // 🌟 เพิ่มการรับค่า relation (ข้อความ)
 
-        if (!inmate_id || !visitor_id_card){
-            throw new ValidationError("กรุณาระบุ inmate_id และ visitor_id_card",400);
+        // 1. ตรวจสอบข้อมูลเบื้องต้น
+        if (!inmate_number){
+            throw new ValidationError("กรุณาระบุรหัสผู้ต้องขัง", 400);
+        }
+        if (!relation || typeof relation !== 'string' || relation.trim() === ''){
+            throw new ValidationError("กรุณาระบุความสัมพันธ์กับผู้ต้องขัง", 400);
         }
         if (!req.files || !req.files['id_card_image'] || !req.files['selfie_image']){
-            throw new ValidationError("กรุณาอัปโหลดรูปภาพบัตรประชาชนและรูปภาพเซลฟี่",400);
+            throw new ValidationError("กรุณาอัปโหลดรูปภาพบัตรประชาชนและรูปภาพเซลฟี่", 400);
         }
-        const [inmateRows] = await db.execute(`
-            SELECT inmate_rowID 
-            FROM incarcerations 
-            WHERE inmate_id = ?
-        `, [inmate_id]);
+
+        // 2. 🌟 Map ความสัมพันธ์ (String) เป็น ID (Number)
+        const trimmedRelation = relation.trim();
+        // แก้ไขชื่อตาราง 'relations_type' และคอลัมน์ให้ตรงกับฐานข้อมูลของคุณ
+        const [relationRows] = await db.execute('SELECT id FROM relations_type WHERE type_name_relationship_th = ?', [trimmedRelation]);
+        
+        if (relationRows.length === 0) {
+            throw new ValidationError(`ไม่พบประเภทความสัมพันธ์ '${trimmedRelation}' ในระบบ กรุณาตรวจสอบอีกครั้ง`, 400);
+        }
+        const finalRelationId = relationRows[0].id_relations; // ได้ ID ตัวเลขแล้ว!
+
+        // 3. ดึงเลขบัตรประชาชนของญาติที่ล็อกอินอยู่
+        const [userRows] = await db.execute('SELECT id_card, firstname, lastname FROM user WHERE userId = ?', [userId]);
+        const visitor = userRows[0];
+
+        // 4. หารหัสนักโทษในระบบ
+        const [inmateRows] = await db.execute(`SELECT inmate_rowID FROM incarcerations WHERE inmate_id = ?`, [inmate_number]);
         if (inmateRows.length === 0) {
             throw new ValidationError("ไม่พบข้อมูลรหัสผู้ต้องขังนี้ในระบบ กรุณาตรวจสอบรหัสอีกครั้ง", 404);
         }
         const internalInmateId = inmateRows[0].inmate_rowID;
 
-        
+        // 5. เช็กว่าเคยส่งคำขอผูกบัญชีกับนักโทษคนนี้ไปหรือยัง?
+        const [existingReq] = await db.execute(`
+            SELECT id, status 
+            FROM user_inmate_relationship 
+            WHERE userId = ? AND inmateId = ?
+        `, [userId, internalInmateId]);
 
-        const [rows] = await db.execute(`
-            SELECT ui.id,ui.userId,ui.status,ic.inmate_id AS inmate_number, ui.id_card_image, ui.selfie_image
-            FROM user_inmate_relationship AS ui
-            JOIN incarcerations AS ic ON ui.inmateId = ic.inmate_rowID
-            WHERE ic.inmate_rowID = ? AND ui.visitor_id_card = ?
-
-            
-            `,[internalInmateId,visitor_id_card]);
-
-        let relationshipId;
-        let isNewRequest = false;
-        let oldImages = null;
-        if (rows.length > 0){
-            const relationship = rows[0];
-
-            if (relationship.userId !== null && relationship.userId !== userId) {
-                throw new ValidationError("บัตรประชาชนนี้ถูกใช้งานโดยบัญชีอื่นไปแล้ว กรุณาติดต่อเจ้าหน้าที่", 400);
-            }
-            if (relationship.status === 'APPROVED' || relationship.status === 'PENDING') {
-                console.log("rela : ",relationship.id)
+        if (existingReq.length > 0) {
+            const rel = existingReq[0];
+            if (rel.status === 'APPROVED' || rel.status === 'PENDING') {
                 throw new ValidationError("คุณได้ส่งคำขอไปแล้ว หรือสถานะได้รับการอนุมัติแล้ว ไม่สามารถส่งซ้ำได้", 400);
             }
-            relationshipId = relationship.id;
-            oldImages = {
-                id_card: relationship.id_card_image,
-                selfie: relationship.selfie_image
-            }
-        }else {
-            // 🟡 กรณีที่ 2: "ไม่มีชื่อในระบบ" (นักโทษลืมแจ้ง หรืออยากเพิ่มชื่อใหม่)
-            isNewRequest = true; // เปิด Flag ว่านี่คือการสร้างคำร้องใหม่
         }
+
+        // 6. จัดการเซฟรูปภาพ
         const processAndSaveImage = async (fileBuffer, fieldName) => {
             const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
             const filename = `${fieldName}-${uniqueSuffix}.jpg`;
             const filepath = path.join(process.cwd(), 'uploads', filename);
-            console.log("🕵️‍♂️ ตำแหน่งไฟล์รูปที่แท้จริงคือ: ", filepath);
-
-            await sharp(fileBuffer)
-                .resize({ width: 1000, withoutEnlargement: true })
-                .jpeg({ quality: 70 })
-                .toFile(filepath);
-
+            await sharp(fileBuffer).resize({ width: 1000, withoutEnlargement: true }).jpeg({ quality: 70 }).toFile(filepath);
             return filename;
         };
 
@@ -359,60 +486,40 @@ app.post('/user/claim-inmate', checkAPI_key,checkAuth,upload.fields([
             processAndSaveImage(req.files['selfie_image'][0].buffer, 'selfie_image')
         ]);
 
-       if (!isNewRequest){
-        await db.execute(`
-            UPDATE user_inmate_relationship 
-            SET userId = ?,
-            status = 'PENDING',
-            id_card_image = ?,
-            selfie_image = ?
-            WHERE id = ?
-            `,[userId,idCardFilename,selfieFilename,relationshipId])
-
-            const deleteOldFile = (filename) => {
-                if(filename) {
-                    const filePath = path.join(process.cwd(),'uploads',filename);
-                    
-                    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-
-                }
-            }
-            if (oldImages){
-                deleteOldFile(oldImages.id_card);
-                deleteOldFile(oldImages.selfie);
-            }
-       }else{
+        // 7. บันทึก/อัปเดต ลงฐานข้อมูล (🌟 เพิ่ม relationsType_id)
+        let relationshipId;
+        if (existingReq.length > 0) {
+            // กรณีเคยถูกปฏิเสธ (REJECTED) แล้วส่งใหม่ ให้อัปเดตสถานะกลับเป็น PENDING พร้อมเปลี่ยนความสัมพันธ์ใหม่
+            await db.execute(`
+                UPDATE user_inmate_relationship 
+                SET status = 'PENDING', id_card_image = ?, selfie_image = ?, reject_reason = NULL, relationsType_id = ?
+                WHERE id = ?
+            `, [idCardFilename, selfieFilename, finalRelationId, existingReq[0].id]);
+            relationshipId = existingReq[0].id;
+        } else {
+            // กรณีขอผูกครั้งแรก
             const [insertResult] = await db.execute(`
                 INSERT INTO user_inmate_relationship
-                (userId, inmateId,visitor_id_card,visitor_firstname,visitor_lastname,status,id_card_image,selfie_image)
-                VALUES (?,?,?,?,?,'PENDING',?,?)
-                
-                
-                
-                `,[userId,internalInmateId,visitor_id_card,null,null, idCardFilename, selfieFilename])
-                relationshipId = insertResult.insertId;
-
-       }
+                (userId, inmateId, visitor_id_card, status, id_card_image, selfie_image, relationsType_id)
+                VALUES (?, ?, ?, 'PENDING', ?, ?, ?)
+            `, [userId, internalInmateId, visitor.id_card, idCardFilename, selfieFilename, finalRelationId]);
+            relationshipId = insertResult.insertId;
+        }
         
         res.status(200).json({
-
             message : 'ส่งคำขอสำเร็จ! กรุณารอเจ้าหน้าที่ตรวจสอบรูปภาพหลักฐาน',
-            data : {
-                relationship_id : relationshipId,
-                status : 'PENDING'
+            data : { 
+                relationship_id : relationshipId, 
+                status : 'PENDING',
+                relation_name : trimmedRelation // ส่งชื่อความสัมพันธ์กลับไปให้แอปเผื่อเอาไปแสดงผล
             }
-        })
+        });
 
-        
-
-    }catch (error){
-        console.error(error)
-        if (error instanceof ValidationError){
-            return res.status(error.statusCode || 400).json({message: error.message})
-        }
-        return res.status(500).json({message: 'Internal Server Error'})
+    } catch (error){
+        console.error("Claim Inmate Error:", error);
+        if (error instanceof ValidationError) return res.status(error.statusCode || 400).json({message: error.message});
+        return res.status(500).json({message: 'Internal Server Error'});
     }
-
 });
 
 app.get('/admin/request/pending',checkAPI_key,checkAdminAuth,checkRole(['SUPER_ADMIN','REGISTRAR']),async(req,res) => {
