@@ -948,6 +948,49 @@ app.get('/admin/visit-slots', checkAPI_key, checkAdminAuth, checkRole(['SUPER_AD
 });
 
 // ==========================================
+// 🗑️ API สำหรับ Admin ลบรอบเวลา (Visit Slot)
+// ==========================================
+app.delete('/admin/visit-slots/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+    try {
+        const slotId = req.params.id;
+
+        // 1. ดึงข้อมูลรอบเวลามาตรวจสอบก่อน
+        const [existingSlot] = await db.execute(`SELECT current_booking FROM visit_slot WHERE id = ?`, [slotId]);
+        
+        if (existingSlot.length === 0) {
+            return res.status(404).json({ message: "ไม่พบรอบเวลานี้ในระบบ หรือถูกลบไปแล้ว" });
+        }
+
+        const currentBooking = existingSlot[0].current_booking;
+
+        // 2. 🚨 ดักบั๊กความปลอดภัย: เช็คว่ามีคนจองไปแล้วหรือยัง?
+        if (currentBooking > 0) {
+            return res.status(400).json({ 
+                message: `ไม่อนุญาตให้ลบรอบเวลานี้! เนื่องจากมีญาติทำการจองคิวเข้ามาแล้วจำนวน ${currentBooking} คิว (หากต้องการยกเลิก กรุณายกเลิกคิวของญาติก่อน หรือเปลี่ยนสถานะรอบเป็น 'CLOSED' แทน)` 
+            });
+        }
+
+        // 3. ✅ ถ้ายังไม่มีใครจอง (current_booking = 0) ทำการลบทิ้งออกจากฐานข้อมูลได้เลย
+        await db.execute(`DELETE FROM visit_slot WHERE id = ?`, [slotId]);
+
+        res.status(200).json({ message: "ลบรอบการจองออกจากระบบสำเร็จ" });
+
+    } catch (error) {
+        console.error("Delete Visit Slot Error:", error);
+        
+        // 🚨 ดักจับ Error พิเศษ: กรณีที่ฐานข้อมูลติด Foreign Key แบบซ่อนเร้น
+        if (error.code === 'ER_ROW_IS_REFERENCED_2') {
+            return res.status(400).json({ 
+                message: "ไม่สามารถลบได้ เนื่องจากข้อมูลรอบเวลานี้ผูกกับประวัติการจองในระบบแล้ว" 
+            });
+        }
+
+        res.status(500).json({ message: "เกิดข้อผิดพลาดในการลบรอบการจอง" });
+    }
+});
+
+
+// ==========================================
 // 📋 API สำหรับ Admin ดึงรายชื่อการจองคิวเยี่ยมญาติ
 // ==========================================
 app.get('/admin/visit-bookings', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
@@ -2631,7 +2674,7 @@ app.post('/booking', checkAPI_key,checkAuth, async (req,res) => {
         }
         console.log("ช่องเวลาการเยี่ยมชมนี้ยังมีที่ว่างอยู่ สามารถทำการจองได้",slotData.platforms)
         const randomStr = Math.random().toString(36).substring(2, 8).toUpperCase();
-        const bk_type = slotData.platforms === 'ZOOM' ? 'ZM' : 'LN' 
+        const bk_type = slotData.platforms === 'ZOOM' ? 'ZM' : slotData.platforms === 'WEBRTC' ? 'RTC' : 'LN';
         let bookingCode = `${bk_type}-${randomStr}`;
         
         let meeting_id = null;
@@ -2757,6 +2800,8 @@ app.get('/my-booking', checkAPI_key,checkAuth, async (req,res) => {
                     const raw_message = `เวลา:${row.starts_at}-ชื่อ:${row.firstname}-รหัสการจอง:${row.booking_code}`
                     const encoded_message = encodeURIComponent(raw_message)
                     actionUrl = `https://line.me/R/oaMessage/${lineOaLink}/?text=${encoded_message}`
+                }else if (row.platforms === 'WEBRTC'){
+                    actionUrl = `https://prison-visit-booking.duckdns.org/front.html?room=${row.booking_code}`
                 }
 
         return {
@@ -3225,7 +3270,8 @@ app.post('/booking/reschedule',checkAPI_key,checkAuth,async (req,res) => {
         let current_booking_code = old_slot.booking_code;
 
         if (oldPlatforms !== newPlatforms){
-            const prefix = newPlatforms === 'ZOOM' ? 'ZM' : 'LN';
+            const prefix = newPlatforms === 'ZOOM' ? 'ZM' : slotData.platforms === 'WEBRTC' ? 'RTC' : 'LN';
+
             const randomString = Math.random().toString(36).substring(2, 8).toUpperCase();
             
             // อัปเดตตัวแปรเป็นรหัสใหม่ (เช่น ZM-X9Y8Z7)
@@ -3366,6 +3412,8 @@ app.get('/admin/slots', checkAPI_key,checkAdminAuth,checkRole(['SUPER_ADMIN','RE
                 }else if (row.platforms === 'LINE'){
                     
                     actionUrl = `เวลา:${row.starts_at}-ชื่อ:${row.inmate_firstname}-รหัสการจอง:${row.booking_code}`
+                }else if (row.platforms === 'WEBRTC'){
+                    actionUrl = `https://prison-visit-booking.duckdns.org/front.html?room=${row.booking_code}`
                 }
 
                 return {
