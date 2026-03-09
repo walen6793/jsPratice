@@ -588,6 +588,7 @@ app.put('/admin/request/:id/review',checkAPI_key,checkAdminAuth,checkRole(['SUPE
     const {action,reject_reason} = req.body;
 
     if(action !== 'APPROVED' && action !== 'REJECTED'){
+        console.log("Action : ",action)
         throw new ValidationError("Action ต้องเป็น APPROVED หรือ REJECTED",400);
     
     }
