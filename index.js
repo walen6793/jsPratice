@@ -1246,7 +1246,9 @@ app.get('/admin/inmates', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN'
                 i.id, 
                 i.firstname, 
                 i.lastname, 
-                ic.inmate_id AS prisoner_number
+                i.id_card,
+                ic.inmate_id AS prisoner_number,
+                il.location_name
             FROM inmate i
             -- 1. หากล่องข้อมูลล่าสุดของนักโทษแต่ละคนก่อน
             LEFT JOIN (
@@ -1256,6 +1258,7 @@ app.get('/admin/inmates', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN'
             ) latest_record ON i.id = latest_record.inmate_rowID
             -- 2. เอาไอดีล่าสุดนั้น ไปดึงรหัสนักโทษ (inmate_id) ตัวจริงออกมา
             LEFT JOIN incarcerations ic ON latest_record.latest_id = ic.id
+            LEFT JOIN inmate_location il ON ic.current_location_id = il.id
         `;
         let queryParams = [];
 
