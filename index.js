@@ -1103,7 +1103,7 @@ app.delete('/admin/visit-slots/:id', checkAPI_key, checkAdminAuth, checkRole(['S
 // ==========================================
 // 📋 API สำหรับ Admin ดึงรายชื่อการจองคิวเยี่ยมญาติ
 // ==========================================
-app.get('/admin/visit-bookings', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+app.get('/admin/visit-bookings', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR','VISITATION']), async (req, res) => {
     try {
         const { date, slot_id, status, booking_code, inmate_id } = req.query;
 
@@ -1836,6 +1836,64 @@ app.get('/api/dashboard/export', async (req, res) => {
         res.status(500).send("เกิดข้อผิดพลาดในการสร้างไฟล์รายงาน");
     }
 });
+
+app.put('/admin/visit-bookings/:id/status', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'VISITATION']), async (req, res) => {
+    try {
+        const bookingId = req.params.id;
+        const { status } = req.body; 
+
+        // 1. ตรวจสอบค่า status ที่อนุญาตให้เปลี่ยนผ่าน API เส้นนี้
+        const allowedStatuses = ['CHECKED_IN', 'COMPLETED', 'NO_SHOW'];
+        if (!allowedStatuses.includes(status)) {
+            throw new ValidationError("สถานะไม่ถูกต้อง (ต้องเป็น CHECKED_IN, COMPLETED หรือ NO_SHOW เท่านั้น)");
+        }
+
+        // 2. ค้นหาข้อมูลการจองปัจจุบัน
+        const [rows] = await db.execute('SELECT status, relative_user_id, inmate_id FROM visit_booking WHERE id = ?', [bookingId]);
+        if (rows.length === 0) {
+            return res.status(404).json({ message: "ไม่พบข้อมูลการจองนี้ในระบบ" });
+        }
+
+        const currentStatus = rows[0].status;
+
+        // 3. 🚨 กฎควบคุมการเปลี่ยนสถานะ (State Machine Validation)
+        if (status === 'CHECKED_IN') {
+            if (currentStatus !== 'PENDING') {
+                throw new ValidationError(`ไม่สามารถเช็คอินได้! สถานะปัจจุบันคือ '${currentStatus}' (คิวที่จะเช็คอินต้องได้รับการอนุมัติ PENDING แล้วเท่านั้น)`, 400);
+            }
+        } 
+        else if (status === 'COMPLETED') {
+            if (currentStatus !== 'CHECKED_IN' && currentStatus !== 'PENDING') {
+                throw new ValidationError(`ไม่สามารถจบการเยี่ยมได้! สถานะปัจจุบันคือ '${currentStatus}' (ต้องเช็คอินก่อน)`, 400);
+            }
+        } 
+        else if (status === 'NO_SHOW') { // 🌟 เพิ่มเงื่อนไข ไม่มาเยี่ยม
+            if (currentStatus !== 'PENDING') {
+                throw new ValidationError(`ไม่สามารถระบุว่าขาดนัดได้! เนื่องจากสถานะปัจจุบันคือ '${currentStatus}' (คิวที่จะระบุว่าไม่มาเยี่ยม ต้องอยู่ในสถานะ APPROVED เท่านั้น)`, 400);
+            }
+        }
+
+        // 4. ✅ อัปเดตสถานะลงฐานข้อมูล
+        await db.execute('UPDATE visit_booking SET status = ? WHERE id = ?', [status, bookingId]);
+
+        res.status(200).json({
+            message: `อัปเดตสถานะการจองเป็น ${status} สำเร็จ`,
+            data: {
+                booking_id: bookingId,
+                previous_status: currentStatus,
+                new_status: status
+            }
+        });
+
+    } catch (error) {
+        console.error("Update Booking Status Error:", error);
+        if (error instanceof ValidationError) {
+            return res.status(error.statusCode || 400).json({ message: error.message });
+        }
+        res.status(500).json({ message: "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์ (Internal Server Error)" });
+    }
+});
+
 // 📈 API สำหรับ Dashboard: กราฟสถิติการเยี่ยมย้อนหลัง 7 วัน
 app.get('/api/dashboard/chart', async (req, res) => {
     try {
@@ -3520,6 +3578,109 @@ app.post('/booking/reschedule',checkAPI_key,checkAuth,async (req,res) => {
 //     try{
 //         const [rows] = await db.execute(``
 //     }
+
+
+// ==========================================
+// 📜 API สำหรับเจ้าหน้าที่/แอดมิน: ดูประวัติการเยี่ยมย้อนหลัง (Visit History)
+// ==========================================
+app.get('/admin/visit-history', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR', 'VISITATION']), async (req, res) => {
+    try {
+        // รับค่า Filter (เผื่อเจ้าหน้าที่อยากค้นหาประวัติเฉพาะคน)
+        const { inmate_id, relative_id, start_date, end_date } = req.query;
+
+        // 🌟 กรองเอาเฉพาะสถานะที่ "จบกระบวนการแล้ว" เท่านั้น
+        let whereConditions = ["vb.status IN ('COMPLETED', 'NO_SHOW', 'CANCELLED', 'REJECTED')"];
+        let queryParams = [];
+
+        // 1. ค้นหาประวัติของนักโทษคนใดคนหนึ่ง
+        if (inmate_id) {
+            whereConditions.push('vb.inmate_id = ?');
+            queryParams.push(inmate_id);
+        }
+        // 2. ค้นหาประวัติของญาติคนใดคนหนึ่ง
+        if (relative_id) {
+            whereConditions.push('u.id_card = ?');
+            queryParams.push(relative_id);
+        }
+        // 3. ค้นหาตามช่วงเวลา (เช่น ดูประวัติของเดือนที่แล้ว)
+        if (start_date && end_date) {
+            whereConditions.push('vs.visit_date BETWEEN ? AND ?');
+            queryParams.push(start_date, end_date);
+        }
+
+        let whereSQL = 'WHERE ' + whereConditions.join(' AND ');
+
+        // 🌟 คำสั่ง SQL รวบรวมข้อมูลประวัติ (เรียงจากใหม่ไปเก่า DESC)
+        const sql = `
+            SELECT 
+                vb.id AS booking_id,
+                vb.booking_code,
+                vb.status AS booking_status,
+                vs.visit_date,
+                vs.starts_at,
+                vs.ends_at,
+                d.platforms,
+                u.id_card AS visitor_id_card,
+                u.userId AS relative_id,
+                u.firstname AS visitor_firstname, 
+                u.lastname AS visitor_lastname,
+                i.id AS inmate_id,
+                ic.inmate_id AS inmate_number,
+                i.firstname AS inmate_firstname, 
+                i.lastname AS inmate_lastname
+            FROM visit_booking vb
+            JOIN visit_slot vs ON vb.slot_id = vs.id
+            LEFT JOIN devices d ON vs.device_id = d.id
+            LEFT JOIN user u ON vb.relative_user_id = u.userId
+            LEFT JOIN inmate i ON vb.inmate_id = i.id
+            JOIN incarcerations ic ON i.id = ic.inmate_rowID
+            ${whereSQL}
+            ORDER BY vs.visit_date DESC, vs.starts_at DESC 
+        `;
+
+        const [historyRows] = await db.execute(sql, queryParams);
+
+        // 🌟 Map แปลภาษาให้พร้อมนำไปโชว์หน้าเว็บ
+        const statusMap = {
+            'COMPLETED': 'เยี่ยมสมบูรณ์',
+            'NO_SHOW': 'ไม่มาตามนัด',
+            'CANCELLED': 'ยกเลิก',
+            'REJECTED': 'ไม่อนุมัติ'
+        };
+
+        const formattedHistory = historyRows.map(row => {
+            const thaiDate = new Date(row.visit_date).toLocaleDateString('th-TH', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            });
+
+            return {
+                booking_id: row.booking_id,
+                visit_date: thaiDate,
+                time: `${row.starts_at} - ${row.ends_at}`,
+                status_en: row.booking_status,
+                status_th: statusMap[row.booking_status] || row.booking_status,
+                platform: row.platforms,
+                inmate_name: `${row.inmate_firstname} ${row.inmate_lastname}`,
+                inmate_number: row.inmate_number,
+                visitor_id_card : row.visitor_id_card,
+                visitor_name: `${row.visitor_firstname} ${row.visitor_lastname}`
+            };
+        });
+
+        res.status(200).json({
+            message: "ดึงข้อมูลประวัติการเยี่ยมย้อนหลังสำเร็จ",
+            total_records: formattedHistory.length,
+            data: formattedHistory
+        });
+
+    } catch (error) {
+        console.error("Get Visit History Error:", error);
+        res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลประวัติย้อนหลัง" });
+    }
+});
+
 
 
 app.get('/admin/slots', checkAPI_key,checkAdminAuth,checkRole(['SUPER_ADMIN','REGISTRAR']),async (req,res) => {
