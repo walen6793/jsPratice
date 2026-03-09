@@ -445,7 +445,7 @@ app.post('/user/claim-inmate', checkAPI_key, checkAuth, upload.fields([
         if (relationRows.length === 0) {
             throw new ValidationError(`ไม่พบประเภทความสัมพันธ์ '${trimmedRelation}' ในระบบ กรุณาตรวจสอบอีกครั้ง`, 400);
         }
-        const finalRelationId = relationRows[0].id_relations; // ได้ ID ตัวเลขแล้ว!
+        const finalRelationId = relationRows[0].id; // ได้ ID ตัวเลขแล้ว!
 
         // 3. ดึงเลขบัตรประชาชนของญาติที่ล็อกอินอยู่
         const [userRows] = await db.execute('SELECT id_card, firstname, lastname FROM user WHERE userId = ?', [userId]);
@@ -492,7 +492,7 @@ app.post('/user/claim-inmate', checkAPI_key, checkAuth, upload.fields([
             // กรณีเคยถูกปฏิเสธ (REJECTED) แล้วส่งใหม่ ให้อัปเดตสถานะกลับเป็น PENDING พร้อมเปลี่ยนความสัมพันธ์ใหม่
             await db.execute(`
                 UPDATE user_inmate_relationship 
-                SET status = 'PENDING', id_card_image = ?, selfie_image = ?, reject_reason = NULL, relationsType_id = ?
+                SET status = 'PENDING', id_card_image = ?, selfie_image = ?, reject_reason = NULL, relationType_id = ?
                 WHERE id = ?
             `, [idCardFilename, selfieFilename, finalRelationId, existingReq[0].id]);
             relationshipId = existingReq[0].id;
@@ -500,7 +500,7 @@ app.post('/user/claim-inmate', checkAPI_key, checkAuth, upload.fields([
             // กรณีขอผูกครั้งแรก
             const [insertResult] = await db.execute(`
                 INSERT INTO user_inmate_relationship
-                (userId, inmateId, visitor_id_card, status, id_card_image, selfie_image, relationsType_id)
+                (userId, inmateId, visitor_id_card, status, id_card_image, selfie_image, relationType_id)
                 VALUES (?, ?, ?, 'PENDING', ?, ?, ?)
             `, [userId, internalInmateId, visitor.id_card, idCardFilename, selfieFilename, finalRelationId]);
             relationshipId = insertResult.insertId;
