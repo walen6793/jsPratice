@@ -1105,33 +1105,27 @@ app.delete('/admin/visit-slots/:id', checkAPI_key, checkAdminAuth, checkRole(['S
 // ==========================================
 app.get('/admin/visit-bookings', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
     try {
-        // 1. รับค่าตัวกรอง (เอาไว้หาว่าวันนี้มีใครจองบ้าง หรือดูเฉพาะสถานะ PENDING)
         const { date, slot_id, status, booking_code, inmate_id } = req.query;
 
         let whereConditions = [];
         let queryParams = [];
 
-        // กรองตามวันที่เยี่ยม (ใช้บ่อยสุด แอดมินใช้ดูคิวของแต่ละวัน)
         if (date) {
             whereConditions.push('vs.visit_date = ?');
             queryParams.push(date);
         }
-        // กรองตามรหัสรอบ (เอาไว้กดดูเจาะจงทีละรอบ)
         if (slot_id) {
             whereConditions.push('vb.slot_id = ?');
             queryParams.push(slot_id);
         }
-        // กรองสถานะใบจอง (เช่น PENDING, APPROVED, COMPLETED)
         if (status) {
             whereConditions.push('vb.status = ?');
             queryParams.push(status);
         }
-        // ค้นหาด้วยรหัสใบจอง (ตอนญาติถือใบจองมายื่นหน้าเคาน์เตอร์)
         if (booking_code) {
             whereConditions.push('vb.booking_code = ?');
             queryParams.push(booking_code);
         }
-        // ดูประวัติการโดนเยี่ยมของนักโทษ
         if (inmate_id) {
             whereConditions.push('vb.inmate_id = ?');
             queryParams.push(inmate_id);
@@ -1142,46 +1136,93 @@ app.get('/admin/visit-bookings', checkAPI_key, checkAdminAuth, checkRole(['SUPER
             whereSQL = 'WHERE ' + whereConditions.join(' AND ');
         }
 
-        // 2. 🌟 SQL รวบรวมข้อมูลระดับจักรวาล (JOIN 5 ตาราง)
-        // ⚠️ หมายเหตุ: ตาราง u (users/ญาติ) และ i (inmates/นักโทษ) ให้ปรับชื่อคอลัมน์ตามฐานข้อมูลจริงของคุณนะครับ
+        // 1. 🌟 แก้ไข SQL: แยก firstname/lastname และเพิ่ม starts_url, platforms
         const sql = `
             SELECT 
                 vb.id AS booking_id,
                 vb.booking_code,
                 vb.status AS booking_status,
                 vb.created_at AS booked_on,
-                vb.meeting_id,
+                vb.starts_url, -- 🌟 ดึงลิงก์เริ่มประชุมของ Zoom (สำหรับแอดมิน)
                 vb.join_url,
                 vs.visit_date,
                 vs.starts_at,
                 vs.ends_at,
                 d.device_name,
-                d.platforms AS platform,
+                d.platforms, -- 🌟 ดึงชื่อแพลตฟอร์ม
                 u.userId AS relative_id,
-                CONCAT(u.firstname, ' ', u.lastname) AS relative_fullname, -- 🌟 ดึงชื่อญาติ
+                u.firstname AS visitor_firstname, 
+                u.lastname AS visitor_lastname,
                 i.id AS inmate_id,
                 ic.inmate_id AS inmate_number,
-                CONCAT(i.firstname, ' ', i.lastname) AS inmate_fullname -- 🌟 ดึงชื่อนักโทษ
+                i.firstname AS inmate_firstname, 
+                i.lastname AS inmate_lastname
             FROM visit_booking vb
             JOIN visit_slot vs ON vb.slot_id = vs.id
-            
             LEFT JOIN devices d ON vs.device_id = d.id
-            LEFT JOIN user u ON vb.relative_user_id = u.userId      -- ⚠️ เช็คชื่อตารางญาติของคุณ
-            LEFT JOIN inmate i ON vb.inmate_id = i.id         -- ⚠️ เช็คชื่อตารางนักโทษของคุณ
+            LEFT JOIN user u ON vb.relative_user_id = u.userId
+            LEFT JOIN inmate i ON vb.inmate_id = i.id
             JOIN incarcerations ic ON i.id = ic.inmate_rowID
-            
             ${whereSQL}
             ORDER BY vs.visit_date ASC, vs.starts_at ASC, vb.created_at ASC
         `;
 
         const [bookings] = await db.execute(sql, queryParams);
 
-        // 3. จัด Format วันที่ให้สวยงาม
-        const formattedBookings = bookings.map(b => ({
-            ...b,
-            visit_date: new Date(b.visit_date).toLocaleDateString('en-CA'),
-            booked_on: new Date(b.booked_on).toLocaleString('th-TH') // โชว์วันเวลาที่กดจอง
-        }));
+        // 2. 🌟 สร้าง Map สำหรับแปลภาษาของสถานะ
+        const statusMap = {
+            'PENDING': 'รอดำเนินการ',
+            'APPROVED': 'อนุมัติแล้ว',
+            'CHECKED_IN': 'เช็คอินแล้ว',
+            'COMPLETED': 'เยี่ยมสมบูรณ์',
+            'NO_SHOW': 'ไม่มาตามนัด',
+            'CANCELLED': 'ยกเลิก',
+            'REJECTED': 'ไม่อนุมัติ'
+        };
+
+        // 3. 🌟 Map ข้อมูลตามโครงสร้างที่คุณต้องการ
+        const formattedBookings = bookings.map(row => {
+            let actionUrl = null;
+            
+            // แปลงวันที่เป็นรูปแบบภาษาไทย
+            const thaiDate = new Date(row.visit_date).toLocaleDateString('th-TH', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            });
+
+            // ตรวจสอบแพลตฟอร์มเพื่อสร้างลิงก์ (actionUrl)
+            if (row.platforms === 'ZOOM') {
+                actionUrl = row.starts_url || row.join_url; // ใช้ starts_url เป็นหลัก
+            } else if (row.platforms === 'LINE') {
+                actionUrl = `เวลา:${row.starts_at}-ชื่อ:${row.inmate_firstname}-รหัสการจอง:${row.booking_code}`;
+            } else if (row.platforms === 'WEBRTC') {
+                actionUrl = `https://prison-visit-booking.duckdns.org/front.html?room=${row.booking_code}`;
+            }
+
+            // ส่งคืนโครงสร้าง JSON ตามที่คุณออกแบบไว้เป๊ะๆ
+            return {
+                booking_id: row.booking_id,
+                inmate: {
+                    firstname: row.inmate_firstname,
+                    lastname: row.inmate_lastname
+                },
+                visitor: {
+                    firstname: row.visitor_firstname,
+                    lastname: row.visitor_lastname
+                },
+                slot: {
+                    booking_id: row.booking_id,
+                    visit_date: thaiDate,
+                    time: `${row.starts_at} - ${row.ends_at}`,
+                    device_name: row.device_name,
+                    status: statusMap[row.booking_status] || row.booking_status,
+                    device_platform: row.platforms,
+                    bookingCode: row.booking_code,
+                    meeting_link: actionUrl
+                }
+            };
+        });
 
         res.status(200).json({
             message: "ดึงข้อมูลการจองสำเร็จ",
@@ -1194,7 +1235,6 @@ app.get('/admin/visit-bookings', checkAPI_key, checkAdminAuth, checkRole(['SUPER
         res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลการจอง" });
     }
 });
-
 
 
 app.get('/admin/inmates', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
@@ -3521,7 +3561,6 @@ app.get('/admin/slots', checkAPI_key,checkAdminAuth,checkRole(['SUPER_ADMIN','RE
                 if(row.platforms === 'ZOOM'){
                     actionUrl = row.starts_url
                 }else if (row.platforms === 'LINE'){
-                    
                     actionUrl = `เวลา:${row.starts_at}-ชื่อ:${row.inmate_firstname}-รหัสการจอง:${row.booking_code}`
                 }else if (row.platforms === 'WEBRTC'){
                     actionUrl = `https://prison-visit-booking.duckdns.org/front.html?room=${row.booking_code}`
