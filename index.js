@@ -1857,6 +1857,7 @@ app.post('/register', checkAPI_key, async(req,res) => {
         
         if (prefixRows.length === 0) {
             // ถ้าพิมพ์คำนำหน้ามาแปลกๆ แล้วหาในฐานข้อมูลไม่เจอ
+            console.log("prefix = : ",newUser.prefixe);
             throw new ValidationError("คำนำหน้าชื่อไม่ถูกต้อง หรือไม่มีในระบบ");
         }
         const finalPrefixId = prefixRows[0].id_prefixes; // ได้ ID ตัวเลขมาแล้ว!
