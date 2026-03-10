@@ -13,6 +13,9 @@ const moment = require('moment')
 const xlsx = require('xlsx');
 const { Server } = require("socket.io");
 const cron = require('node-cron');
+const dayjs = require('dayjs');
+const customParseFormat = require('dayjs/plugin/customParseFormat');
+dayjs.extend(customParseFormat); 
 
 const ExcelJS = require('exceljs');
 const PdfTable = require('pdfkit-table');
@@ -675,7 +678,8 @@ app.post('/admin/inmate/excel',checkAPI_key,checkAdminAuth, checkRole(['SUPER_AD
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
 
-    const data = xlsx.utils.sheet_to_json(sheet);//แปลงหัวคอลลัมเป็น key array
+    const data = xlsx.utils.sheet_to_json(sheet,{raw: false, // บังคับให้อ่านค่าที่ Format แล้ว (จะได้ข้อความ "02/15/2002")
+    dateNF: 'yyyy-mm-dd'})
 
     if(data.length === 0){
         return res.status(400).json({message: 'ไม่พบข้อมูลในไฟล์หรือไฟล์ว่างเปล่า'})
@@ -711,11 +715,23 @@ app.post('/admin/inmate/excel',checkAPI_key,checkAdminAuth, checkRole(['SUPER_AD
         const admission_date = row['วันรับโทษ'] || row['admission_date'] || null
         const release_date = row['วันพ้นโทษ'] || row['release_date'] || null
         const gender = row['เพศ']|| row['gender']
-
+        const birthdate = row['วันเกิด'] || row['birthdate'] || null
+        
         if (!inmate_id_card||!inmate_id || !firstname || !lastname){
             errorList.push(`แถวที่ Excel ${ i + 2 } : ข้อมูลไม่ครบ (ขาดเลขบัตรประชาชน รหัสนักโทษ หรือ ชื่อ-นามสกุล)`);
             continue;
         }
+        if (birthdate) {
+            console.log('birthdat = ',birthdate)
+        // ใส่พารามิเตอร์ตัวที่ 3 เป็น true เพื่อเปิดโหมด Strict Validation
+        const isValidDate = dayjs(birthdate, 'YYYY-MM-DD', true).isValid();
+        
+        if (!isValidDate) {
+            return res.status(400).json({ 
+                message: "รูปแบบวันเกิดไม่ถูกต้อง หรือวันที่ไม่มีอยู่จริง กรุณาใช้ YYYY-MM-DD" 
+            });
+        }
+    }
 
         let realInmateId;
 
@@ -739,9 +755,9 @@ app.post('/admin/inmate/excel',checkAPI_key,checkAdminAuth, checkRole(['SUPER_AD
             realInmateId = inmateRows[0].id
         }else{
             const [insertInmate] = await connection.execute(`
-                INSERT INTO inmate (id_card,firstname,lastname,gender) VALUES (?,?,?,?)
+                INSERT INTO inmate (id_card,firstname,lastname,birthdate,gender) VALUES (?,?,?,?,?)
                 
-                `,[inmate_id_card,firstname,lastname,gender])
+                `,[inmate_id_card,firstname,lastname,birthdate,gender])
             realInmateId = insertInmate.insertId
         }
 
@@ -1293,7 +1309,7 @@ app.post('/admin/inmates', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN
     await connection.beginTransaction(); // ใช้ Transaction เผื่อพังกลางทาง
 
     try {
-        const { id_card,prefix,firstname, lastname, gender,inmate_number,zoneText } = req.body;
+        const { id_card,prefix,firstname, lastname, birthdate,gender,inmate_number,zoneText } = req.body;
 
         if (!firstname || !lastname || !inmate_number) {
             return res.status(400).json({ message: "กรุณากรอก ชื่อ, นามสกุล และ รหัสนักโทษ ให้ครบถ้วน" });
@@ -1301,6 +1317,17 @@ app.post('/admin/inmates', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN
         if (id_card.length != 13){
             return res.status(400).json({ message: "กรุณากรอกเลขบัตรประชาชนให้ครบ 13 หลัก"})
         }
+        if (birthdate) {
+            
+        // ใส่พารามิเตอร์ตัวที่ 3 เป็น true เพื่อเปิดโหมด Strict Validation
+        const isValidDate = dayjs(birthdate, 'YYYY-MM-DD', true).isValid();
+        
+        if (!isValidDate) {
+            return res.status(400).json({ 
+                message: "รูปแบบวันเกิดไม่ถูกต้อง หรือวันที่ไม่มีอยู่จริง กรุณาใช้ YYYY-MM-DD" 
+            });
+        }
+    }
 
         const [zoneRows] = await connection.execute(`SELECT id, location_name FROM inmate_location`);
         const zoneMap ={};
@@ -1345,8 +1372,8 @@ app.post('/admin/inmates', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN
             real_inmateId = existingInmate[0].id
         }else{
             const [inmateResult] = await connection.execute(
-            `INSERT INTO inmate (id_card,prefixeID,firstname, lastname,allow_visit,gender) VALUES (?, ?, ?, ?, ?, ?)`,
-            [id_card,finalPrefixId,firstname, lastname,'1',gender]
+            `INSERT INTO inmate (id_card,prefixeID,firstname, lastname,birthdate,allow_visit,gender) VALUES (?, ?, ?, ?,?, ?, ?)`,
+            [id_card,finalPrefixId,firstname, lastname,birthdate,'1',gender]
         );
             real_inmateId = inmateResult.insertId;
 
@@ -1403,7 +1430,7 @@ app.put('/admin/inmates/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_AD
 
     try {
         const inmateId = req.params.id; // ดึง ID จาก URL
-        const { id_card, prefix, firstname, lastname, gender, allow_visit, inmate_number, zoneText } = req.body;
+        const { id_card, prefix, firstname, lastname, birthdate, gender, allow_visit, inmate_number, zoneText } = req.body;
 
         // 1. ตรวจสอบข้อมูลเบื้องต้น
         if (!firstname || !lastname || !inmate_number) {
@@ -1412,6 +1439,16 @@ app.put('/admin/inmates/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_AD
         if (id_card && id_card.length !== 13) {
             return res.status(400).json({ message: "กรุณากรอกเลขบัตรประชาชนให้ครบ 13 หลัก" });
         }
+        if (birthdate) {
+    // ใส่พารามิเตอร์ตัวที่ 3 เป็น true เพื่อเปิดโหมด Strict Validation
+        const isValidDate = dayjs(birthdate, 'YYYY-MM-DD', true).isValid();
+        
+        if (!isValidDate) {
+            return res.status(400).json({ 
+                message: "รูปแบบวันเกิดไม่ถูกต้อง หรือวันที่ไม่มีอยู่จริง กรุณาใช้ YYYY-MM-DD" 
+            });
+        }
+    }
 
         // 2. เช็คก่อนว่ามีนักโทษคนนี้ในระบบจริงๆ ไหม
         const [checkInmate] = await connection.execute(`SELECT id FROM inmate WHERE id = ?`, [inmateId]);
@@ -1448,9 +1485,9 @@ app.put('/admin/inmates/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_AD
         // 4. อัปเดตข้อมูลตารางหลัก (inmate)
         await connection.execute(`
             UPDATE inmate 
-            SET id_card = ?, prefixeID = ?, firstname = ?, lastname = ?, allow_visit = ?, gender = ? 
+            SET id_card = ?, prefixeID = ?, firstname = ?, lastname = ?, birthdate = ?,allow_visit = ?, gender = ? 
             WHERE id = ?
-        `, [id_card, finalPrefixId, firstname, lastname, allow_visit, gender, inmateId]);
+        `, [id_card, finalPrefixId, firstname, lastname, birthdate,allow_visit, gender, inmateId]);
 
         // 5. 🌟 อัปเดตตารางรอง (incarcerations) แบบไม่ให้งอก
         const [checkIncarc] = await connection.execute(`SELECT id FROM incarcerations WHERE inmate_rowID = ?`, [inmateId]);
@@ -1506,10 +1543,15 @@ app.delete('/admin/inmates/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER
         }
 
         // 2. ลบข้อมูลจากตารางลูก (incarcerations) ก่อน
+        await connection.execute(`DELETE FROM visit_booking WHERE inmate_id = ?`,[inmateId])
+        await connection.execute(`DELETE FROM user_inmate_relationship WHERE inmateId = ?`,[inmateId])
+
         await connection.execute(`DELETE FROM incarcerations WHERE inmate_rowID = ?`, [inmateId]);
 
         // 3. ลบข้อมูลจากตารางแม่ (inmate)
         await connection.execute(`DELETE FROM inmate WHERE id = ?`, [inmateId]);
+
+        
 
         // เซฟการเปลี่ยนแปลง
         await connection.commit();
@@ -2373,11 +2415,12 @@ app.get('/inmate_info/:id', checkAPI_key,checkAuth, async (req,res) => {
         const inmateId = req.params.id
         const myUserId = req.user.userId
         const sql = `
-                        SELECT n.inmate_id ,p.prefixes_nameTh, i.firstname ,i.lastname ,DATE_FORMAT(i.birthdate, '%d/%m/%Y') AS birthdate, i.inmate_photo_url ,n.case_type ,DATE_FORMAT(n.admission_date, '%d/%m/%Y') AS admission_date , DATE_FORMAT(n.release_date, '%d/%m/%Y') AS release_date ,n.status ,t.inmate_type ,l.location_name ,r.prison_name, TIMESTAMPDIFF( YEAR, i.birthdate, CURDATE() ) AS age
+                        SELECT n.inmate_id ,p.prefixes_nameTh, i.firstname ,i.lastname ,rt.type_name_relationship_th,DATE_FORMAT(i.birthdate, '%d/%m/%Y') AS birthdate, i.inmate_photo_url ,n.case_type ,DATE_FORMAT(n.admission_date, '%d/%m/%Y') AS admission_date , DATE_FORMAT(n.release_date, '%d/%m/%Y') AS release_date ,n.status ,t.inmate_type ,l.location_name ,r.prison_name, TIMESTAMPDIFF( YEAR, i.birthdate, CURDATE() ) AS age
                         FROM user_inmate_relationship AS u 
                         LEFT JOIN inmate AS i ON u.inmateId = i.id 
                         LEFT JOIN prefixes as p ON i.prefixeID =  p.id_prefixes 
                         LEFT JOIN incarcerations AS n ON n.inmate_rowID = i.id 
+                        LEFT JOIN relation_type AS rt ON u.relationType_id = rt.id
                         LEFT JOIN inmate_type AS t ON i.inmate_type = t.id
                         LEFT JOIN inmate_location AS l ON n.current_location_id = l.id 
                         LEFT JOIN prisons AS r ON l.prison_id = r.id
@@ -2408,7 +2451,7 @@ app.get('/inmate_info/:id', checkAPI_key,checkAuth, async (req,res) => {
                 age : data.age,
                 birthdate : data.birthdate,
                 
-                inmate_type : data.inmate_type,
+                relation : data.type_name_relationship_th,
                 location_name : data.location_name + ' / ' + data.prison_name,
                 status : status_th,
                 
