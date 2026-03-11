@@ -91,41 +91,67 @@ const io = new Server(server, {
 
 
 // 🌟 3. สร้างลอจิก "นายหน้าจับคู่ (Signaling)"
+// 🌟 สร้างลอจิก "นายหน้าจับคู่ (Signaling)" พร้อมระบบตรวจตั๋ว
 io.on('connection', (socket) => {
     console.log('⚡ มีอุปกรณ์เชื่อมต่อเข้ามาใหม่: ', socket.id);
 
-    // เมื่อมีคนขอเข้าห้อง (ญาติ หรือ ตู้เรือนจำ)
-    socket.on('join-room', (roomId, userId) => {
-        socket.join(roomId); // จับยัดเข้าห้อง
-        console.log(`👤 User ${userId} เข้าห้อง ${roomId}`);
+    // 🌟 1. เปลี่ยนจากรับ (roomId, userId) มารับเป็น (token) แทน
+    socket.on('join-room', (token) => {
+        try {
+            // 🌟 2. ด่านตรวจตั๋ว: แกะ Token เพื่อเอาข้อมูลจริง
+            // (ต้องใช้ process.env.JWT_SECRET ตัวเดียวกับตอนสร้าง Token)
+            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            
+            // ดึงข้อมูลที่ซ่อนไว้ออกมา
+            const roomId = decoded.roomId;
+            const role = decoded.role; // จะได้ 'visitor' หรือ 'inmate'
+            const userId = decoded.userId || socket.id;
 
-        // ตะโกนบอกคนอื่นๆ ในห้องว่า "เฮ้ย มีคนมาใหม่นะ!" (เพื่อเตรียมเชื่อมกล้อง)
-        socket.to(roomId).emit('user-connected', userId);
+            // 🌟 3. ตั๋วผ่าน! จับยัดเข้าห้อง
+            socket.join(roomId); 
+            console.log(`👤 User ${userId} (สิทธิ์: ${role}) เข้าห้อง ${roomId}`);
 
-        // จัดการลอจิกตอนส่งข้อมูล WebRTC (SDP / ICE Candidate) หากัน
-        socket.on('offer', (offer, room) => socket.to(room).emit('offer', offer));
-        socket.on('answer', (answer, room) => socket.to(room).emit('answer', answer));
-        socket.on('ice-candidate', (candidate, room) => socket.to(room).emit('ice-candidate', candidate));
+            // 🌟 4. ส่งข้อความกลับไปบอกหน้าเว็บของคนๆ นี้ว่า "คุณคือ Role อะไร"
+            // หน้าเว็บจะได้เอาไปเปลี่ยนป้ายชื่อให้ถูกต้อง
+            socket.emit('role-assigned', role);
 
+            // ตะโกนบอกคนอื่นๆ ในห้องว่ามีคนมาใหม่
+            socket.to(roomId).emit('user-connected', userId);
 
+            // ==========================================
+            // ลอจิกส่งข้อมูล WebRTC (เอาของเดิมมาใส่ไว้ในนี้)
+            // ==========================================
+            socket.on('offer', (offer, room) => socket.to(room).emit('offer', offer));
+            socket.on('answer', (answer, room) => socket.to(room).emit('answer', answer));
+            socket.on('ice-candidate', (candidate, room) => socket.to(room).emit('ice-candidate', candidate));
 
-        // 🌟 เพิ่ม Event สำหรับตอนที่ User กดปุ่ม "วางสาย"
-    socket.on('leave-room', (roomId, userId) => {
-        socket.leave(roomId); // จับเตะออกจากห้องของ Socket.io
-        console.log(`👋 User ${userId} กดปุ่มวางสายและออกจากห้อง ${roomId}`);
-        
-        // ตะโกนบอกคนที่เหลือในห้องว่า "เขาไปแล้วนะ!"
-        socket.to(roomId).emit('user-disconnected', userId);
-    });
-        
-        // เมื่อมีคนกดวางสาย หรือเน็ตหลุด
-        socket.on('disconnect', () => {
-            console.log(`❌ User ${userId} ออกจากห้อง ${roomId}`);
-            socket.to(roomId).emit('user-disconnected', userId);
-        });
+            // ==========================================
+            // ลอจิกการออกจากห้อง
+            // ==========================================
+            socket.on('leave-room', () => {
+                socket.leave(roomId); 
+                console.log(`👋 User ${userId} (${role}) กดปุ่มวางสาย ออกจากห้อง ${roomId}`);
+                socket.to(roomId).emit('user-disconnected', userId);
+            });
+            
+            // เมื่อเน็ตหลุด หรือปิดเบราว์เซอร์
+            socket.on('disconnect', () => {
+                console.log(`❌ User ${userId} (${role}) เน็ตหลุดจากห้อง ${roomId}`);
+                socket.to(roomId).emit('user-disconnected', userId);
+            });
+
+        } catch (error) {
+            // 🛑 5. ถ้าตั๋วปลอม, หมดอายุ, หรือแอบแก้ URL ระบบจะเด้งมาตรงนี้!
+            console.error("❌ การเข้าห้องถูกปฏิเสธ (Token Error):", error.message);
+            
+            // แจ้งเตือนหน้าเว็บว่าเข้าไม่ได้
+            socket.emit('join-error', 'บัตรผ่านไม่ถูกต้อง หรือหมดอายุแล้ว');
+            
+            // เตะตัดการเชื่อมต่อทันที
+            socket.disconnect(); 
+        }
     });
 });
-
 
 server.listen(port, async () => {
     try {
@@ -2062,7 +2088,7 @@ app.get('/api/dashboard/summary', checkAPI_key, checkAdminAuth, checkRole(['SUPE
         let daysToAdd = 0;
         if (range === 'weekly') {
             daysToAdd = 6; 
-        } else if (range === 'month'){
+        } else if (range === 'monthly'){
             daysToAdd = 29;
         }
 
