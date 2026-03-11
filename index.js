@@ -2224,9 +2224,9 @@ app.put('/admin/visit-bookings/:id/status', checkAPI_key, checkAdminAuth, checkR
         const { status } = req.body; 
 
         // 1. ตรวจสอบค่า status ที่อนุญาตให้เปลี่ยนผ่าน API เส้นนี้
-        const allowedStatuses = ['CHECKED_IN', 'COMPLETED', 'NO_SHOW'];
+        const allowedStatuses = ['COMPLETED', 'NO_SHOW'];
         if (!allowedStatuses.includes(status)) {
-            throw new ValidationError("สถานะไม่ถูกต้อง (ต้องเป็น CHECKED_IN, COMPLETED หรือ NO_SHOW เท่านั้น)");
+            throw new ValidationError("สถานะไม่ถูกต้อง (ต้องเป็น COMPLETED หรือ NO_SHOW เท่านั้น)");
         }
 
         // 2. ค้นหาข้อมูลการจองปัจจุบัน
@@ -2238,22 +2238,16 @@ app.put('/admin/visit-bookings/:id/status', checkAPI_key, checkAdminAuth, checkR
         const currentStatus = rows[0].status;
 
         // 3. 🚨 กฎควบคุมการเปลี่ยนสถานะ (State Machine Validation)
-        if (status === 'CHECKED_IN') {
-            if (currentStatus !== 'PENDING') {
-                throw new ValidationError(`ไม่สามารถเช็คอินได้! สถานะปัจจุบันคือ '${currentStatus}' (คิวที่จะเช็คอินต้องได้รับการอนุมัติ PENDING แล้วเท่านั้น)`, 400);
-            }
-        } 
-        else if (status === 'COMPLETED') {
-            if (currentStatus !== 'CHECKED_IN' && currentStatus !== 'PENDING') {
-                throw new ValidationError(`ไม่สามารถจบการเยี่ยมได้! สถานะปัจจุบันคือ '${currentStatus}' (ต้องเช็คอินก่อน)`, 400);
-            }
-        } 
-        else if (status === 'NO_SHOW') { // 🌟 เพิ่มเงื่อนไข ไม่มาเยี่ยม
-            if (currentStatus !== 'PENDING') {
-                throw new ValidationError(`ไม่สามารถระบุว่าขาดนัดได้! เนื่องจากสถานะปัจจุบันคือ '${currentStatus}' (คิวที่จะระบุว่าไม่มาเยี่ยม ต้องอยู่ในสถานะ APPROVED เท่านั้น)`, 400);
-            }
+        if (status === 'COMPLETED') {
+            if (currentStatus !== 'NO_SHOW') {
+                throw new ValidationError(`ไม่สามารถเช็คอินได้! สถานะปัจจุบันคือ '${currentStatus}' `, 400);
+            
+        }else if (status === 'NO_SHOW'){
+            if (currentStatus !== 'COMPLETED') {
+                throw new ValidationError(`ไม่สามารถเช็คอินได้! สถานะปัจจุบันคือ '${currentStatus}' `, 400);
+            
         }
-
+    }}
         // 4. ✅ อัปเดตสถานะลงฐานข้อมูล
         await db.execute('UPDATE visit_booking SET status = ? WHERE id = ?', [status, bookingId]);
 
