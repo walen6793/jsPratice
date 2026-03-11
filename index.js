@@ -1588,7 +1588,7 @@ app.get('/admin/visit-bookings', checkAPI_key, checkAdminAuth, checkRole(['SUPER
 });
 
 
-app.get('/admin/inmates', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+app.get('/admin/inmates', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR','COMMANDER']), async (req, res) => {
     try {
         const { search } = req.query; // รับคำค้นหา เช่น ?search=สมชาย หรือ ?search=67001
         
@@ -1915,7 +1915,7 @@ app.delete('/admin/inmates/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER
 // ==========================================
 // ✏️ API แก้ไขรอบเวลา (Visit Slot)
 // ==========================================
-app.put('/admin/visit-slots/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+app.put('/admin/visit-slots/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR',,'COMMANDER']), async (req, res) => {
     try {
         const slotId = req.params.id;
         const { visit_date, starts_at, ends_at, capacity, allowed_gender, device_id, status } = req.body;
