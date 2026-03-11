@@ -1962,8 +1962,99 @@ app.put('/admin/visit-slots/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPE
     }
 });
 
-// 📊 API สำหรับ Dashboard: ดึงตัวเลขสรุป
-app.get('/api/dashboard/summary',checkAPI_key,checkAdminAuth,checkRole(['SUPER_ADMIN','COMMANDER']), async (req, res) => {
+// // 📊 API สำหรับ Dashboard: ดึงตัวเลขสรุป
+// app.get('/api/dashboard/summary',checkAPI_key,checkAdminAuth,checkRole(['SUPER_ADMIN','COMMANDER']), async (req, res) => {
+//     try {
+//         const startDate = req.query.date || new Date().toISOString().split('T')[0];
+//         const range = req.query.range || 'daily';
+        
+//         let daysToAdd = 0;
+//         if (range === 'weekly') {
+//             daysToAdd = 6; 
+//         }
+
+//         const endDateObj = new Date(startDate);
+//         endDateObj.setDate(endDateObj.getDate() + daysToAdd);
+//         const endDate = endDateObj.toISOString().split('T')[0];
+
+//         // 📊 1. คำสั่ง SQL สรุปตัวเลข (เหมือนเดิม)
+//         const sqlStats = `
+//             SELECT 
+//                 COUNT(DISTINCT vb.slot_id) AS total_bookings,
+//                 COUNT(DISTINCT CASE WHEN vb.status = 'COMPLETED' THEN vb.slot_id END) AS completed_visits,
+//                 COUNT(DISTINCT CASE WHEN vb.status = 'CANCELLED' OR vb.status = 'REJECTED' THEN vb.slot_id END) AS cancelled_visits,
+//                 COUNT(DISTINCT CASE WHEN vb.status = 'PENDING' THEN vb.slot_id END) AS pending_visits
+//             FROM visit_booking AS vb 
+//             JOIN visit_slot AS vs ON vb.slot_id = vs.id 
+//             WHERE DATE(vs.visit_date) BETWEEN ? AND ?
+//         `;
+        
+//         // 📋 2. คำสั่ง SQL ดึงรายการคิว (🌟 อัปเดตเพิ่ม JOIN ชื่อนักโทษและญาติ)
+//         const sqlQueueList = `
+//             SELECT 
+//                 vb.id AS booking_id,
+//                 vs.id AS slot_id,
+//                 DATE_FORMAT(vs.visit_date, '%Y-%m-%d') AS visit_date, 
+//                 vs.starts_at,
+//                 vs.ends_at,
+//                 vb.status,
+                
+//                 -- 🌟 ดึงชื่อผู้ต้องขัง (ใช้ CONCAT เอาชื่อต่อกับนามสกุล)
+//                 -- 🚨 กรุณาแก้ i.first_name, i.last_name ให้ตรงกับคอลัมน์ในตาราง inmate ของคุณ
+//                 CONCAT(i.firstname, ' ', i.lastname) AS inmate_name,
+                
+//                 -- 🌟 ดึงชื่อญาติ/ผู้จอง 
+//                 -- 🚨 กรุณาแก้ u.first_name, u.last_name ให้ตรงกับคอลัมน์ตาราง users ของคุณ
+//                 CONCAT(u.firstname, ' ', u.lastname) AS visitor_name
+
+//             FROM visit_booking AS vb 
+//             JOIN visit_slot AS vs ON vb.slot_id = vs.id 
+            
+//             -- 🌟 สั่งเชื่อมตาราง (JOIN) เพื่อไปดึงชื่อมา
+//             -- 🚨 กรุณาตรวจสอบ vb.inmate_id และ vb.relative_user_id ให้ตรงกับ foreign key ในตาราง booking ของคุณ
+//             LEFT JOIN inmate AS i ON vb.inmate_id = i.id
+//             LEFT JOIN user AS u ON vb.relative_user_id = u.userId
+
+//             WHERE DATE(vs.visit_date) BETWEEN ? AND ?
+//             AND vb.id IN (
+//                 SELECT MAX(id) 
+//                 FROM visit_booking 
+//                 GROUP BY slot_id
+//             )
+//             ORDER BY vs.visit_date ASC, vs.starts_at ASC
+//         `;
+
+//         // ⚡ 3. รัน Query
+//         const [ [statsResults], [queueResults] ] = await Promise.all([
+//             db.query(sqlStats, [startDate, endDate]),
+//             db.query(sqlQueueList, [startDate, endDate])
+//         ]);
+
+//         const stats = statsResults[0] || { 
+//             total_bookings: 0, completed_visits: 0, cancelled_visits: 0, pending_visits: 0 
+//         };
+
+//         // 🎉 ส่งข้อมูลกลับไป
+//         res.json({
+//             viewMode: range, 
+//             dateRange: { start: startDate, end: endDate },
+//             summary: {
+//                 totalBookings: Number(stats.total_bookings),
+//                 completedVisits: Number(stats.completed_visits),
+//                 cancelledVisits: Number(stats.cancelled_visits),
+//                 pendingVisits: Number(stats.pending_visits)
+//             },
+//             queueList: queueResults // 🌟 ตอนนี้ใน Array นี้จะมี inmate_name และ visitor_name โผล่มาแล้ว!
+//         });
+
+//     } catch (error) {
+//         console.error("Dashboard API Error:", error);
+//         res.status(500).json({ error: error.message });
+//     }
+// });
+
+
+app.get('/api/dashboard/summary', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN','COMMANDER']), async (req, res) => {
     try {
         const startDate = req.query.date || new Date().toISOString().split('T')[0];
         const range = req.query.range || 'daily';
@@ -1971,25 +2062,43 @@ app.get('/api/dashboard/summary',checkAPI_key,checkAdminAuth,checkRole(['SUPER_A
         let daysToAdd = 0;
         if (range === 'weekly') {
             daysToAdd = 6; 
+        } else if (range === 'month'){
+            daysToAdd = 29;
         }
 
         const endDateObj = new Date(startDate);
         endDateObj.setDate(endDateObj.getDate() + daysToAdd);
         const endDate = endDateObj.toISOString().split('T')[0];
 
-        // 📊 1. คำสั่ง SQL สรุปตัวเลข (เหมือนเดิม)
+        // 📊 1. คำสั่ง SQL สรุปตัวเลข (🌟 อัปเดต: เพิ่มการนับเพศ และ แพลตฟอร์ม)
         const sqlStats = `
             SELECT 
                 COUNT(DISTINCT vb.slot_id) AS total_bookings,
                 COUNT(DISTINCT CASE WHEN vb.status = 'COMPLETED' THEN vb.slot_id END) AS completed_visits,
                 COUNT(DISTINCT CASE WHEN vb.status = 'CANCELLED' OR vb.status = 'REJECTED' THEN vb.slot_id END) AS cancelled_visits,
-                COUNT(DISTINCT CASE WHEN vb.status = 'PENDING' THEN vb.slot_id END) AS pending_visits
+                COUNT(DISTINCT CASE WHEN vb.status = 'PENDING' THEN vb.slot_id END) AS pending_visits,
+                
+                -- 🧑‍🤝‍🧑 สัดส่วนนักโทษ ชาย/หญิง (อิงจากตาราง inmate)
+                -- 🚨 หมายเหตุ: แก้ไขคำว่า 'ชาย' และ 'หญิง' ให้ตรงกับค่า ENUM ในตารางของคุณ (เช่น อาจจะเป็น 'MALE', 'FEMALE')
+                COUNT(DISTINCT CASE WHEN i.gender = 'MALE' THEN vb.slot_id END) AS male_visits,
+                COUNT(DISTINCT CASE WHEN i.gender = 'FEMALE' THEN vb.slot_id END) AS female_visits,
+                
+                -- 📱 สัดส่วนแพลตฟอร์มที่ใช้เยี่ยม (อิงจากตาราง devices)
+                COUNT(DISTINCT CASE WHEN d.platforms LIKE '%LINE%' THEN vb.slot_id END) AS line_visits,
+                COUNT(DISTINCT CASE WHEN d.platforms LIKE '%ZOOM%' THEN vb.slot_id END) AS zoom_visits,
+                COUNT(DISTINCT CASE WHEN d.platforms LIKE '%WEBRTC%' THEN vb.slot_id END) AS webrtc_visits
+
             FROM visit_booking AS vb 
             JOIN visit_slot AS vs ON vb.slot_id = vs.id 
+            
+            -- 🌟 JOIN เพิ่มเติมเพื่อดึงข้อมูลเพศและช่องทางมาใช้นับ
+            LEFT JOIN inmate AS i ON vb.inmate_id = i.id
+            LEFT JOIN devices AS d ON vs.device_id = d.id
+            
             WHERE DATE(vs.visit_date) BETWEEN ? AND ?
         `;
         
-        // 📋 2. คำสั่ง SQL ดึงรายการคิว (🌟 อัปเดตเพิ่ม JOIN ชื่อนักโทษและญาติ)
+        // 📋 2. คำสั่ง SQL ดึงรายการคิว (ใช้ของเดิมที่คุณทำไว้ได้เลย)
         const sqlQueueList = `
             SELECT 
                 vb.id AS booking_id,
@@ -1999,19 +2108,11 @@ app.get('/api/dashboard/summary',checkAPI_key,checkAdminAuth,checkRole(['SUPER_A
                 vs.ends_at,
                 vb.status,
                 
-                -- 🌟 ดึงชื่อผู้ต้องขัง (ใช้ CONCAT เอาชื่อต่อกับนามสกุล)
-                -- 🚨 กรุณาแก้ i.first_name, i.last_name ให้ตรงกับคอลัมน์ในตาราง inmate ของคุณ
                 CONCAT(i.firstname, ' ', i.lastname) AS inmate_name,
-                
-                -- 🌟 ดึงชื่อญาติ/ผู้จอง 
-                -- 🚨 กรุณาแก้ u.first_name, u.last_name ให้ตรงกับคอลัมน์ตาราง users ของคุณ
                 CONCAT(u.firstname, ' ', u.lastname) AS visitor_name
 
             FROM visit_booking AS vb 
             JOIN visit_slot AS vs ON vb.slot_id = vs.id 
-            
-            -- 🌟 สั่งเชื่อมตาราง (JOIN) เพื่อไปดึงชื่อมา
-            -- 🚨 กรุณาตรวจสอบ vb.inmate_id และ vb.relative_user_id ให้ตรงกับ foreign key ในตาราง booking ของคุณ
             LEFT JOIN inmate AS i ON vb.inmate_id = i.id
             LEFT JOIN user AS u ON vb.relative_user_id = u.userId
 
@@ -2024,27 +2125,36 @@ app.get('/api/dashboard/summary',checkAPI_key,checkAdminAuth,checkRole(['SUPER_A
             ORDER BY vs.visit_date ASC, vs.starts_at ASC
         `;
 
-        // ⚡ 3. รัน Query
+        // ⚡ 3. รัน Query คู่ขนาน (Promise.all)
         const [ [statsResults], [queueResults] ] = await Promise.all([
             db.query(sqlStats, [startDate, endDate]),
             db.query(sqlQueueList, [startDate, endDate])
         ]);
 
-        const stats = statsResults[0] || { 
-            total_bookings: 0, completed_visits: 0, cancelled_visits: 0, pending_visits: 0 
-        };
+        const stats = statsResults[0] || {};
 
-        // 🎉 ส่งข้อมูลกลับไป
+        // 🎉 4. ส่งข้อมูลกลับไปจัดรูปแบบให้สวยงาม
         res.json({
             viewMode: range, 
             dateRange: { start: startDate, end: endDate },
             summary: {
-                totalBookings: Number(stats.total_bookings),
-                completedVisits: Number(stats.completed_visits),
-                cancelledVisits: Number(stats.cancelled_visits),
-                pendingVisits: Number(stats.pending_visits)
+                totalBookings: Number(stats.total_bookings || 0),
+                completedVisits: Number(stats.completed_visits || 0),
+                cancelledVisits: Number(stats.cancelled_visits || 0),
+                pendingVisits: Number(stats.pending_visits || 0)
             },
-            queueList: queueResults // 🌟 ตอนนี้ใน Array นี้จะมี inmate_name และ visitor_name โผล่มาแล้ว!
+            // 🌟 เพิ่มก้อนข้อมูลสัดส่วนชายหญิง
+            genderStats: {
+                male: Number(stats.male_visits || 0),
+                female: Number(stats.female_visits || 0)
+            },
+            // 🌟 เพิ่มก้อนข้อมูลแพลตฟอร์ม
+            platformStats: {
+                line: Number(stats.line_visits || 0),
+                zoom: Number(stats.zoom_visits || 0),
+                webrtc: Number(stats.webrtc_visits || 0)
+            },
+            queueList: queueResults 
         });
 
     } catch (error) {
@@ -2052,6 +2162,8 @@ app.get('/api/dashboard/summary',checkAPI_key,checkAdminAuth,checkRole(['SUPER_A
         res.status(500).json({ error: error.message });
     }
 });
+
+
 
 app.get('/api/dashboard/export', async (req, res) => {
     try {
