@@ -3370,6 +3370,22 @@ app.get('/booking-preview', checkAPI_key,checkAuth, async (req,res) => {
             throw new ValidationError("ไม่พบข้อมูลช่องเวลาการเยี่ยมชมที่ระบุ")
         }
         const data = slotRows[0]
+        const [existingBooking] = await connection.execute(`
+            SELECT vb.id 
+            FROM visit_booking vb
+            JOIN visit_slot vs ON vb.slot_id = vs.id
+            WHERE vb.inmate_id = ? 
+              AND vs.visit_date = ? 
+              AND vb.status IN ('PENDING', 'APPROVED')
+        `, [inmate_id, data.visit_date]);
+
+        if (existingBooking.length > 0) {
+            // 🛑 ถ้าเจอว่ามีคิวอยู่แล้ว ให้เด้ง Error กลับไปหาหน้าเว็บเลย!
+            return res.status(400).json({ 
+                message: "ผู้ต้องขังรายนี้มีคิวเยี่ยมในวันที่เลือกแล้ว (สิทธิ์การเยี่ยม 1 ครั้ง/วัน) กรุณาเลือกวันอื่นครับ" 
+            });
+        }
+
         console.log("quota " ,data.Quota_Used)
 
 
