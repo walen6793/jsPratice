@@ -426,8 +426,8 @@ app.get('/admin/users', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 
 
         // ดึงเฉพาะคอลัมน์ที่ปลอดภัย (ไม่ดึง hashed_password)
         let sql = `
-            SELECT userId, id_card, prefixe_id, firstname, lastname, phone, is_active, create_time, last_active_at 
-            FROM user 
+            SELECT u.userId, u.id_card, p.prefixes_nameth, u.firstname, u.lastname, u.phone, u.is_active, u.create_time, u.last_active_at 
+            FROM user AS u LEFT JOIN prefixes AS p ON u.prefixe_id = p.id_prefixes
         `;
         let params = [];
 
@@ -484,6 +484,67 @@ app.put('/admin/users/:id/status', checkAPI_key, checkAdminAuth, checkRole(['SUP
     } catch (error) {
         console.error("Update User Status Error:", error);
         return res.status(500).json({ message: "เกิดข้อผิดพลาดในการอัปเดตสถานะบัญชี" });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+// PUT /admin/users/:id (แก้ไขข้อมูลส่วนตัวญาติโดยแอดมิน)
+app.put('/admin/users/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+        const targetUserId = req.params.id;
+        const { prefix, firstname, lastname, phone } = req.body;
+
+        // เช็กข้อมูลบังคับ (ไม่ให้แก้ id_card ป้องกันข้อมูลหลักเพี้ยน)
+        if (!firstname || !lastname || !phone) {
+            return res.status(400).json({ message: "กรุณากรอกชื่อ นามสกุล และเบอร์โทรศัพท์ให้ครบถ้วน" });
+        }
+        const [prefixRows] = await connection.execute(`SELECT id_prefixes, prefixes_nameTh FROM prefixes`);
+        const prefixMap ={};
+        prefixRows.forEach(item => {
+            // ใช้ .trim() เพื่อตัดช่องว่างหน้า-หลัง เผื่อใน DB พิมพ์เว้นวรรคเกิน
+            const cleanPrefixName = item.prefixes_nameTh.toString().trim();
+            
+            // จับคู่ ตัวหนังสือ = ID
+            prefixMap[cleanPrefixName] = item.id_prefixes; 
+        });
+
+        let finalPrefixId = null;
+        if (prefix) {
+            finalPrefixId = prefixMap[prefix]; // โยนคำว่า "แดน 1" เข้าไป มันจะคายเลข 1 ออกมา
+
+            // 🚨 เช็คว่า "ถ้าหา ID ไม่เจอ (แปลว่าแอดมินพิมพ์ชื่อแดนผิด หรือไม่มีแดนนี้ในระบบ)"
+            if (!finalPrefixId) {
+                finalPrefixId = null;
+            }
+        }
+
+        // เช็กว่ามีญาติคนนี้อยู่จริงไหม
+        const [checkUser] = await connection.execute('SELECT userId FROM user WHERE userId = ?', [targetUserId]);
+        if (checkUser.length === 0) {
+            return res.status(404).json({ message: "ไม่พบข้อมูลญาติในระบบ" });
+        }
+        const [checkPhone_SQL] = await connection.execute('SELECT phone FROM user WHERE phone = ? ;', [phone])
+        if (checkPhone_SQL.length > 0){
+            throw new ValidationError("เบอร์โทรศัพท์นี้มีผู้ใช้งานแล้ว")
+        }
+
+        // อัปเดตข้อมูล
+        await connection.execute(`
+            UPDATE user 
+            SET prefixe_id = ?, firstname = ?, lastname = ?, phone = ?
+            WHERE userId = ?
+        `, [finalPrefixId || null, firstname, lastname, phone, targetUserId]);
+
+        return res.status(200).json({ message: "แก้ไขข้อมูลส่วนตัวญาติเรียบร้อยแล้ว" });
+
+    } catch (error) {
+        console.error("Update User Info Error:", error);
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        return res.status(500).json({ message: "เกิดข้อผิดพลาดในการแก้ไขข้อมูลญาติ" });
     } finally {
         if (connection) connection.release();
     }
