@@ -3251,10 +3251,10 @@ app.get('/slots', checkAPI_key,checkAuth, async (req,res) => {
             FROM visit_slot AS v 
             JOIN devices AS d ON v.device_id = d.id 
             
-            WHERE v.visit_date = ? AND d.platforms = ? AND v.current_booking <= v.capacity AND v.allowed_gender = ${genderInmate[0].gender}
+            WHERE v.visit_date = ? AND d.platforms = ? AND v.current_booking <= v.capacity AND v.allowed_gender = ?
             ORDER BY d.device_name,v.starts_at ASC;
             `
-        let queryParams = [date,type]
+        let queryParams = [date,type,genderInmate[0].gender]
         if (exclude_booking_id){
             const [excludeInfo] = await db.execute(`SELECT slot_id FROM visit_booking WHERE id = ? AND status NOT IN('CANCELLED','REJECTED')`,[exclude_booking_id])
             if (excludeInfo.length > 0){
