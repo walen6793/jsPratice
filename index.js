@@ -525,7 +525,7 @@ app.put('/admin/users/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMI
         if (checkUser.length === 0) {
             return res.status(404).json({ message: "ไม่พบข้อมูลญาติในระบบ" });
         }
-        const [checkPhone_SQL] = await connection.execute('SELECT phone FROM user WHERE phone = ? ;', [phone])
+        const [checkPhone_SQL] = await connection.execute('SELECT phone FROM user WHERE phone = ? AND userId != ?;', [phone,targetUserId])
         if (checkPhone_SQL.length > 0){
             throw new ValidationError("เบอร์โทรศัพท์นี้มีผู้ใช้งานแล้ว")
         }
@@ -563,7 +563,7 @@ app.post('/user/claim-inmate', checkAPI_key, checkAuth, upload.fields([
 
         // 1. ตรวจสอบข้อมูลเบื้องต้น
         if (!firstname || !lastname){
-            throw new ValidationError("กรุณาระบุรหัสผู้ต้องขัง", 400);
+            throw new ValidationError("กรุณาระบุชื่อ - นามสกุลผู้ต้องขัง", 400);
         }
         if (!relation || typeof relation !== 'string' || relation.trim() === ''){
             throw new ValidationError("กรุณาระบุความสัมพันธ์กับผู้ต้องขัง", 400);
