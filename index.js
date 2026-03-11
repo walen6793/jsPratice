@@ -4409,7 +4409,9 @@ app.put('/admin/slots/:id/cancel',checkAPI_key,checkAdminAuth,checkRole(['SUPER_
 
 
         const [bookingRows] = await connection.execute(`
-            SELECT slot_id,status ,meeting_id FROM visit_booking WHERE id = ? FOR UPDATE
+            SELECT vb.relative_user_id,vb.slot_id,vb.status ,vb.meeting_id ,DATE(vs.visit_date) AS visit_date,i.firstname,i.lastname,TIME_FORMAT(vs.starts_at, '%H:%i') AS starts_at, 
+            TIME_FORMAT(vs.ends_at, '%H:%i') AS ends_at  FROM visit_booking AS vb JOIN visit_slot AS vs 
+            JOIN inmate AS i ON vb.inmate_id = i.id WHERE vb.id = ? FOR UPDATE
         `,[booking_id])
             if (bookingRows.length === 0){
                 throw new ValidationError("ไม่พบการจองที่ระบุ")
@@ -4427,12 +4429,25 @@ app.put('/admin/slots/:id/cancel',checkAPI_key,checkAdminAuth,checkRole(['SUPER_
             if (updateResult.affectedRows === 0){
                 throw new ValidationError("ไม่สามารถยกเลิกการจองได้")
             }
-            if(bookingRows[0].meeting_id){
-            deleteZoomMeeting(bookingRows[0].meeting_id)
-        }
+
             await connection.execute(`UPDATE visit_slot SET current_booking = current_booking - 1 WHERE id = ? AND current_booking > 0`,
                 [bookingRows[0].slot_id]
             )
+
+            const thaiDate = new Date(bookingRows[0].visit_date).toLocaleDateString('th-TH', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            });
+
+            const cancelTitle = `คิวของคุณถูกยกเลิก`
+            const cancelMessage = `คิวที่คุณได้ทำการจองเยี่ยมนักโทษ ${bookingRows[0].firstname} ${bookingRows[0].lastname} ไว้เมื่อวันที่ ${thaiDate} เวลา ${bookingRows[0].starts_at} - ${bookingRows[0].ends_at} เนื่องจาก ${adminNote}`
+
+            await connection.execute(`INSERT INTO notifications (user_id, title, message, is_read) VALUES (?,?,?,?)`,[bookingRows[0].relative_user_id,cancelTitle,cancelMessage,'0'])
+            if(bookingRows[0].meeting_id){
+            deleteZoomMeeting(bookingRows[0].meeting_id)
+        }
+            
             await connection.commit()
             res.status(200).json({
                 message : 'ยกเลิกการจองสำเร็จ',
