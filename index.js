@@ -2769,27 +2769,17 @@ app.post('/login', checkAPI_key, async(req,res) => {
         // 🌟 เพิ่มเติมฟีเจอร์สำหรับ Flow ใหม่: ดึงสถานะการผูกบัญชีล่าสุดส่งไปให้แอปด้วยเลย
         let claim_status = 'NONE'; // ค่าเริ่มต้น: ยังไม่เคยผูกนักโทษ
         let reject_reason = null;
-        let can_login = false;     // ตัวแปรเช็กว่าให้เข้าสู่ระบบได้ไหม
+           // ตัวแปรเช็กว่าให้เข้าสู่ระบบได้ไหม
 
         if (relRows.length > 0) {
             claim_status = relRows[0].status; // จะได้สถานะที่ดีที่สุดของญาติคนนี้มา
             reject_reason = relRows[0].reject_reason;
 
-            // 🌟 2. เช็กเงื่อนไข: มีนักโทษที่ผูกผ่านแล้วอย่างน้อย 1 คน ให้อนุญาต
-            if (claim_status === 'APPROVED') {
-                can_login = true;
-            }
+            
         }
 
         // 🌟 3. นำไปดักการเข้าสู่ระบบ
-        if (!can_login) {
-            // ถ้าไม่ผ่าน (NONE, PENDING, REJECTED) ให้เตะออก พร้อมบอกเหตุผล
-            return res.status(403).json({
-                message: "ยังไม่สามารถเข้าสู่ระบบได้ กรุณารอการอนุมัติหรือเพิ่มข้อมูลผู้ต้องขัง",
-                claim_status: claim_status,
-                reject_reason: reject_reason
-            });
-        }
+        
         return res.json({
             message : 'Login successful',
             message2 : 'ยินดีต้อนรับ คุณ ' + data.firstname,
