@@ -559,10 +559,10 @@ app.post('/user/claim-inmate', checkAPI_key, checkAuth, upload.fields([
 ]), async(req,res) => {
     try{
         const userId = req.user.userId;
-        const { inmate_number, relation } = req.body; // 🌟 เพิ่มการรับค่า relation (ข้อความ)
+        const { firstname,lastname, relation } = req.body; // 🌟 เพิ่มการรับค่า relation (ข้อความ)
 
         // 1. ตรวจสอบข้อมูลเบื้องต้น
-        if (!inmate_number){
+        if (!firstname || !lastname){
             throw new ValidationError("กรุณาระบุรหัสผู้ต้องขัง", 400);
         }
         if (!relation || typeof relation !== 'string' || relation.trim() === ''){
@@ -587,11 +587,11 @@ app.post('/user/claim-inmate', checkAPI_key, checkAuth, upload.fields([
         const visitor = userRows[0];
 
         // 4. หารหัสนักโทษในระบบ
-        const [inmateRows] = await db.execute(`SELECT inmate_rowID FROM incarcerations WHERE inmate_id = ?`, [inmate_number]);
+        const [inmateRows] = await db.execute(`SELECT id FROM inmate WHERE firstname = ? AND lastname = ?`, [firstname,lastname]);
         if (inmateRows.length === 0) {
-            throw new ValidationError("ไม่พบข้อมูลรหัสผู้ต้องขังนี้ในระบบ กรุณาตรวจสอบรหัสอีกครั้ง", 404);
+            throw new ValidationError("ไม่พบข้อมูลรหัสผู้ต้องขังนี้ในระบบ กรุณาตรวจสอบชื่อนามสกุลอีกครั้ง", 404);
         }
-        const internalInmateId = inmateRows[0].inmate_rowID;
+        const internalInmateId = inmateRows[0].id;
 
         // 5. เช็กว่าเคยส่งคำขอผูกบัญชีกับนักโทษคนนี้ไปหรือยัง?
         const [existingReq] = await db.execute(`
@@ -871,7 +871,7 @@ app.get('/admin/request/pending',checkAPI_key,checkAdminAuth,checkRole(['SUPER_A
             SELECT
                 ui.id AS request_id,
                 u.id_card AS visitor_id_card, 
-                p.prefixes_nameTh,
+                pi.prefixes_nameTh AS visitor_prefix,
                 u.firstname AS visitor_firstname,
                 u.lastname AS visitor_lastname,
                 u.phone,
@@ -879,11 +879,18 @@ app.get('/admin/request/pending',checkAPI_key,checkAdminAuth,checkRole(['SUPER_A
                 ui.selfie_image,
                 ui.status,
                 rt.type_name_relationship_th,
-                ic.inmate_id
+                il.location_name,
+                pi.prefixes_nameTh AS inmate_prefix,
+                i.firstname AS inmate_firstname,i.lastname AS inmate_lastname
+
             FROM user_inmate_relationship ui
             LEFT JOIN user u ON ui.userId = u.userId
-            LEFT JOIN prefixes p ON u.prefixe_id = p.id_prefixes
+            LEFT JOIN prefixes pu ON u.prefixe_id = pu.id_prefixes
+            
             JOIN incarcerations ic ON ui.inmateId = ic.inmate_rowID
+            JOIN inmate i ON ui.inmateId = i.id 
+            LEFT JOIN prefixes pi ON i.prefixeID = pi.id_prefixes
+            LEFT JOIN inmate_location il ON ic.current_location_id = il.id
             LEFT JOIN relation_type AS rt ON ui.relationType_id = rt.id
             WHERE ui.status = 'PENDING'
             ORDER BY ui.id ASC
@@ -2752,18 +2759,37 @@ app.post('/login', checkAPI_key, async(req,res) => {
         if (update_last_active.affectedRows === 0){
             throw new ValidationError("ไม่สามารถ Update เวลาที่ใช้งานล่าสุดได้")
         }
-
+        const [relRows] = await db.execute(`
+            SELECT status, reject_reason 
+            FROM user_inmate_relationship 
+            WHERE userId = ? 
+            ORDER BY FIELD(status, 'APPROVED', 'PENDING', 'REJECTED'), id DESC 
+            LIMIT 1
+            `, [data.userId]);
         // 🌟 เพิ่มเติมฟีเจอร์สำหรับ Flow ใหม่: ดึงสถานะการผูกบัญชีล่าสุดส่งไปให้แอปด้วยเลย
-        const [relRows] = await db.execute('SELECT status, reject_reason FROM user_inmate_relationship WHERE userId = ? ORDER BY id DESC LIMIT 1', [data.userId]);
-        
         let claim_status = 'NONE'; // ค่าเริ่มต้น: ยังไม่เคยผูกนักโทษ
         let reject_reason = null;
+        let can_login = false;     // ตัวแปรเช็กว่าให้เข้าสู่ระบบได้ไหม
 
         if (relRows.length > 0) {
-            claim_status = relRows[0].status; // PENDING, APPROVED หรือ REJECTED
+            claim_status = relRows[0].status; // จะได้สถานะที่ดีที่สุดของญาติคนนี้มา
             reject_reason = relRows[0].reject_reason;
+
+            // 🌟 2. เช็กเงื่อนไข: มีนักโทษที่ผูกผ่านแล้วอย่างน้อย 1 คน ให้อนุญาต
+            if (claim_status === 'APPROVED') {
+                can_login = true;
+            }
         }
-        
+
+        // 🌟 3. นำไปดักการเข้าสู่ระบบ
+        if (!can_login) {
+            // ถ้าไม่ผ่าน (NONE, PENDING, REJECTED) ให้เตะออก พร้อมบอกเหตุผล
+            return res.status(403).json({
+                message: "ยังไม่สามารถเข้าสู่ระบบได้ กรุณารอการอนุมัติหรือเพิ่มข้อมูลผู้ต้องขัง",
+                claim_status: claim_status,
+                reject_reason: reject_reason
+            });
+        }
         return res.json({
             message : 'Login successful',
             message2 : 'ยินดีต้อนรับ คุณ ' + data.firstname,
