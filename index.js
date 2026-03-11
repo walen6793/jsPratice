@@ -3169,8 +3169,7 @@ app.get('/slots/preview', checkAPI_key,checkAuth, async (req,res) => {
         if (!inmate_id || !date){   
             throw new ValidationError("กรุณาระบุ inmate_id และ date")
         }
-
-
+        
 
         const [rows] = await db.execute(`
             SELECT ic.inmate_id , p.prefixes_nameTh, i.firstname ,i.lastname ,i.inmate_photo_url ,i.allow_visit
@@ -3229,10 +3228,17 @@ app.get('/slots', checkAPI_key,checkAuth, async (req,res) => {
     // zoom สามารถจองเวลาเดียวกันได้ไหม
     
     try{
-        const {date, type,exclude_booking_id} = req.query
+        const {date, type,exclude_booking_id,inmate_id} = req.query
         if (!date || !type){
             throw new ValidationError("กรุณาระบุ date และ type")
         }
+        const [genderInmate] = await db.execute(`
+            SELECT gender FROM inmate WHERE id = ?
+            `,[inmate_id])
+        if (genderInmate[0].length < 1){
+            throw new ValidationError('เพศ Error')
+        }
+
         let current_slot_id = null;
         let sql = `SELECT v.id,v.visit_date, 
             TIME_FORMAT(v.starts_at, '%H:%i') AS starts_at, 
@@ -3245,7 +3251,7 @@ app.get('/slots', checkAPI_key,checkAuth, async (req,res) => {
             FROM visit_slot AS v 
             JOIN devices AS d ON v.device_id = d.id 
             
-            WHERE v.visit_date = ? AND d.platforms = ? AND v.current_booking <= v.capacity 
+            WHERE v.visit_date = ? AND d.platforms = ? AND v.current_booking <= v.capacity AND v.allowed_gender = ${genderInmate[0].gender}
             ORDER BY d.device_name,v.starts_at ASC;
             `
         let queryParams = [date,type]
