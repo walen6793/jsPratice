@@ -3354,7 +3354,7 @@ app.get('/booking-preview', checkAPI_key,checkAuth, async (req,res) => {
             throw new ValidationError("ไม่พบข้อมูลช่องเวลาการเยี่ยมชมที่ระบุ")
         }
         const data = slotRows[0]
-        const [existingBooking] = await connection.execute(`
+        const [existingBooking] = await db.execute(`
             SELECT vb.id 
             FROM visit_booking vb
             JOIN visit_slot vs ON vb.slot_id = vs.id
