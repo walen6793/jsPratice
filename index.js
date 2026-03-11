@@ -418,6 +418,77 @@ app.put('/api/notifications/read/:id', checkAPI_key,checkAuth, async (req, res) 
 
 // });
 
+// GET /admin/users (เรียกดูรายชื่อญาติทั้งหมด หรือค้นหาตามชื่อ/เลขบัตร)
+app.get('/admin/users', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'COMMANDER', 'REGISTRAR', 'VISITATION']), async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+        const { search } = req.query; // รับคำค้นหาจาก URL เช่น ?search=สมชาย
+
+        // ดึงเฉพาะคอลัมน์ที่ปลอดภัย (ไม่ดึง hashed_password)
+        let sql = `
+            SELECT userId, id_card, prefixe_id, firstname, lastname, phone, is_active, create_time, last_active_at 
+            FROM user 
+        `;
+        let params = [];
+
+        // ถ้ามีการส่งคำค้นหามา ให้ค้นหาจากเลขบัตร หรือ ชื่อ หรือ นามสกุล
+        if (search) {
+            sql += ` WHERE id_card LIKE ? OR firstname LIKE ? OR lastname LIKE ? `;
+            params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+        }
+
+        sql += ` ORDER BY create_time DESC`;
+
+        const [users] = await connection.execute(sql, params);
+
+        return res.status(200).json({
+            message: "ดึงข้อมูลญาติสำเร็จ",
+            total: users.length,
+            data: users
+        });
+    } catch (error) {
+        console.error("Get Users Error:", error);
+        return res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลญาติ" });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+// PUT /admin/users/:id/status (เปิดการใช้งาน หรือ ระงับบัญชีญาติ)
+app.put('/admin/users/:id/status', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+        const targetUserId = req.params.id; // รับ userId จาก URL
+        const { is_active } = req.body; // รับค่า 1 (เปิด) หรือ 0 (ระงับ) จาก Frontend
+
+        // เช็กว่าส่งค่ามาถูกต้องไหม (ต้องเป็น 0 หรือ 1 เท่านั้น)
+        if (is_active === undefined || ![0, 1].includes(Number(is_active))) {
+            return res.status(400).json({ message: "กรุณาส่งค่า is_active เป็น 0 หรือ 1 เท่านั้น" });
+        }
+
+        // เช็กว่ามีญาติคนนี้อยู่จริงไหม
+        const [checkUser] = await connection.execute('SELECT userId FROM user WHERE userId = ?', [targetUserId]);
+        if (checkUser.length === 0) {
+            return res.status(404).json({ message: "ไม่พบข้อมูลญาติในระบบ" });
+        }
+
+        // อัปเดตสถานะ
+        await connection.execute(`UPDATE user SET is_active = ? WHERE userId = ?`, [is_active, targetUserId]);
+
+        const statusMessage = is_active == 1 ? "เปิดใช้งานบัญชี" : "ระงับการใช้งานบัญชี";
+        
+        return res.status(200).json({ 
+            message: `${statusMessage} เรียบร้อยแล้ว` 
+        });
+
+    } catch (error) {
+        console.error("Update User Status Error:", error);
+        return res.status(500).json({ message: "เกิดข้อผิดพลาดในการอัปเดตสถานะบัญชี" });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
 // ==========================================
 // 📸 API สำหรับญาติส่งคำขอผูกรายชื่อผู้ต้องขัง (พร้อมระบุความสัมพันธ์)
 // ==========================================
@@ -524,6 +595,202 @@ app.post('/user/claim-inmate', checkAPI_key, checkAuth, upload.fields([
         return res.status(500).json({message: 'Internal Server Error'});
     }
 });
+// GET /admin/officers (ดึงรายชื่อเจ้าหน้าที่ทั้งหมด)
+app.get('/admin/officers', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN']), async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+        // เลือกมาเฉพาะข้อมูลที่ปลอดภัย (ไม่ดึง password)
+        const [officers] = await connection.execute(`
+            SELECT id, username, fullname, role, is_active 
+            FROM officers 
+            ORDER BY id DESC
+        `);
+
+        return res.status(200).json({
+            message: "ดึงข้อมูลเจ้าหน้าที่สำเร็จ",
+            total: officers.length,
+            data: officers
+        });
+    } catch (error) {
+        console.error("Get Officers Error:", error);
+        return res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลเจ้าหน้าที่" });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+app.get('/admin/officers/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN']), async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+        const officerId = req.params.id;
+        const [officer] = await connection.execute(`
+            SELECT id, username, fullname, role, is_active 
+            FROM officers WHERE id = ?
+        `, [officerId]);
+
+        if (officer.length === 0) {
+            return res.status(404).json({ message: "ไม่พบข้อมูลเจ้าหน้าที่" });
+        }
+
+        return res.status(200).json({
+            message: "ดึงข้อมูลเจ้าหน้าที่สำเร็จ",
+            data: officer[0]
+        });
+    } catch (error) {
+        console.error("Get Officer By ID Error:", error);
+        return res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลเจ้าหน้าที่" });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+app.post('/admin/officers', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN']), async (req, res) => {
+    const connection = await db.getConnection();
+    
+    try {
+        const { username, password, fullname, role, is_active} = req.body;
+        const allowedRoles = ['REGISTRAR', 'VISITATION', 'COMMANDER', 'SUPER_ADMIN'];
+        // 1. เช็กข้อมูลเบื้องต้น
+        if (!username || !password || !fullname || !role) {
+            return res.status(400).json({ message: "กรุณากรอกข้อมูลที่จำเป็นให้ครบถ้วน" });
+        }
+
+        if (!allowedRoles.includes(role)) {
+            return res.status(403).json({ message: "role ของคุณไม่ถูกต้องต้องเป็น !'REGISTRAR', 'VISITATION', 'COMMANDER', 'SUPER_ADMIN'" });
+        }
+        // 2. เช็กว่า Username นี้มีคนใช้ไปหรือยัง (ห้ามซ้ำ)
+        const [existingUser] = await connection.execute('SELECT id FROM officers WHERE username = ?', [username]);
+        if (existingUser.length > 0) {
+            return res.status(400).json({ message: "Username หรือรหัสเจ้าหน้าที่นี้ มีในระบบแล้ว" });
+        }
+
+        // 3. ป้องกัน Admin ทั่วไป แอบสร้างบัญชีระดับ Super Admin (สิทธิ์เกินตัว)
+        // สมมติว่าคนล็อกอินอยู่คือ req.user (ได้มาจาก Middleware checkAdminAuth)
+        if (req.admin.role !== 'SUPER_ADMIN') {
+            return res.status(403).json({ message: "คุณไม่มีสิทธิ์สร้างบัญชีระดับ SUPER_ADMIN ได้" });
+        }
+
+        // 🌟 4. เข้ารหัสผ่าน (Hashing) ด้วย bcrypt
+        const saltRounds = 10;
+        const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+        // 5. บันทึกลง Database
+        const [result] = await connection.execute(`
+            INSERT INTO officers (
+                username, password, fullname,role, is_active) 
+                VALUES (?, ?, ?, ?, ?)
+        `, [
+            username, 
+            hashedPassword, // ใส่รหัสผ่านที่เข้ารหัสแล้ว (หน้าตาจะเป็นตัวอักษรมั่วๆ ยาวๆ)
+            fullname, 
+            role, 
+            '1', 
+            
+        ]);
+
+        return res.status(201).json({ 
+            message: "สร้างบัญชีเจ้าหน้าที่เรียบร้อยแล้ว",
+            userId: result.insertId
+        });
+
+    } catch (error) {
+        console.error("Create User Error:", error);
+        return res.status(500).json({ message: "เกิดข้อผิดพลาดในการสร้างบัญชีผู้ใช้งาน" });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+// PUT /admin/officers/:id (แก้ไขข้อมูลเจ้าหน้าที่)
+app.put('/admin/officers/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN']), async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+        const officerId = req.params.id;
+        const { username, password, fullname, role, is_active } = req.body;
+        const allowedRoles = ['REGISTRAR', 'VISITATION', 'COMMANDER', 'SUPER_ADMIN'];
+
+        // 1. เช็กว่ามีเจ้าหน้าที่นี้ในระบบไหม
+        const [checkUser] = await connection.execute('SELECT id, password FROM officers WHERE id = ?', [officerId]);
+        if (checkUser.length === 0) {
+            return res.status(404).json({ message: "ไม่พบข้อมูลเจ้าหน้าที่ที่ต้องการแก้ไข" });
+        }
+
+        if (!username || !fullname || !role) {
+            return res.status(400).json({ message: "กรุณากรอกข้อมูล Username, ชื่อ-สกุล และ Role ให้ครบถ้วน" });
+        }
+
+        if (!allowedRoles.includes(role)) {
+            return res.status(400).json({ message: "Role ไม่ถูกต้อง" });
+        }
+
+        // 2. เช็ก Username ซ้ำ (ยกเว้นตัวเอง)
+        const [existingUser] = await connection.execute('SELECT id FROM officers WHERE username = ? AND id != ?', [username, officerId]);
+        if (existingUser.length > 0) {
+            return res.status(400).json({ message: "Username นี้มีคนอื่นใช้ไปแล้ว" });
+        }
+
+        // 3. จัดการเรื่องรหัสผ่าน (อัปเดตเฉพาะเมื่อมีการส่ง password ใหม่มา)
+        let finalPassword = checkUser[0].password; // ตั้งต้นด้วยรหัสผ่านเดิมใน DB
+        if (password && password.trim() !== '') {
+            const saltRounds = 10;
+            finalPassword = await bcrypt.hash(password, saltRounds); // เข้ารหัสผ่านใหม่
+        }
+
+        // 4. สั่งอัปเดตข้อมูล
+        await connection.execute(`
+            UPDATE officers 
+            SET username = ?, password = ?, fullname = ?, role = ?, is_active = ?
+            WHERE id = ?
+        `, [username, finalPassword, fullname, role, is_active || '1', officerId]);
+
+        return res.status(200).json({ message: "แก้ไขข้อมูลเจ้าหน้าที่เรียบร้อยแล้ว" });
+
+    } catch (error) {
+        console.error("Update Officer Error:", error);
+        return res.status(500).json({ message: "เกิดข้อผิดพลาดในการแก้ไขข้อมูล" });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+
+// DELETE /admin/officers/:id (ลบเจ้าหน้าที่ถาวร)
+app.delete('/admin/officers/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN']), async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+        const officerId = req.params.id;
+
+        // 🌟 ทริคป้องกัน: ห้าม SUPER_ADMIN เผลอลบบัญชีตัวเองเด็ดขาด!
+        // (สมมติว่าตอนล็อกอิน เราเก็บ id คนล็อกอินไว้ใน req.admin.id)
+        if (req.admin.id && String(req.admin.id) === String(officerId)) {
+            return res.status(400).json({ message: "ไม่อนุญาตให้ลบบัญชีของตัวเองในขณะที่กำลังใช้งานอยู่ครับ" });
+        }
+
+        const [checkUser] = await connection.execute('SELECT id FROM officers WHERE id = ?', [officerId]);
+        if (checkUser.length === 0) {
+            return res.status(404).json({ message: "ไม่พบข้อมูลเจ้าหน้าที่ที่ต้องการลบ" });
+        }
+
+        await connection.execute('DELETE FROM officers WHERE id = ?', [officerId]);
+
+        return res.status(200).json({ message: "ลบข้อมูลเจ้าหน้าที่สำเร็จเรียบร้อยแล้ว" });
+
+    } catch (error) {
+        console.error("Delete Officer Error:", error);
+        
+        // ดัก Error เผื่อเจ้าหน้าที่คนนี้เคยไปกดอนุมัติคิวเยี่ยมไว้ (ติด Foreign Key)
+        if (error.code === 'ER_ROW_IS_REFERENCED_2') {
+            return res.status(400).json({ 
+                message: "ไม่สามารถลบเจ้าหน้าที่คนนี้ได้ เนื่องจากมีประวัติการทำงานผูกอยู่ในระบบ แนะนำให้เข้าไปแก้ไขสถานะเป็น 'ระงับการใช้งาน' (is_active = 0) แทนครับ" 
+            });
+        }
+
+        return res.status(500).json({ message: "เกิดข้อผิดพลาดในการลบเจ้าหน้าที่" });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
 
 app.get('/admin/request/pending',checkAPI_key,checkAdminAuth,checkRole(['SUPER_ADMIN','REGISTRAR']),async(req,res) => {
     try{
@@ -1990,6 +2257,201 @@ app.get('/api/dashboard/chart', async (req, res) => {
     } catch (error) {
         console.error("Dashboard Chart API Error:", error);
         res.status(500).json({ error: error.message });
+    }
+});
+
+// 2. GET /admin/devices/:id (ดึงข้อมูลอุปกรณ์แค่ 1 เครื่อง สำหรับกดปุ่ม Edit)
+app.get('/admin/devices/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+        const deviceId = req.params.id;
+
+        // เส้นนี้จำเป็นต้องดึงข้อมูลมาทั้งหมด (รวม secret) เพราะแอดมินอาจจะต้องการแก้ไข
+        const [device] = await connection.execute(`
+            SELECT * FROM devices WHERE id = ?
+        `, [deviceId]);
+
+        if (device.length === 0) {
+            return res.status(404).json({ message: "ไม่พบข้อมูลอุปกรณ์ที่ต้องการ" });
+        }
+
+        res.status(200).json({
+            message: "ดึงข้อมูลอุปกรณ์สำเร็จ",
+            data: device[0]
+        });
+
+    } catch (error) {
+        console.error("Get Device By ID Error:", error);
+        res.status(500).json({ message: "เกิดข้อผิดพลาดในการดึงข้อมูลอุปกรณ์" });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+app.post('/admin/devices', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+        let { 
+            device_name, device_type, platforms, status,
+            zoom_account_id, zoom_client_id, zoom_client_secret, 
+            line_oa_id, line_oa_url 
+        } = req.body;
+
+        // 1. ตรวจสอบข้อมูลบังคับ
+        if (!device_name || !platforms || platforms.length === 0) {
+            return res.status(400).json({ message: "กรุณากรอกชื่ออุปกรณ์ และเลือกแพลตฟอร์มอย่างน้อย 1 อย่าง" });
+        }
+
+        // 2. แปลง Array ของ platforms ให้เป็น String คั่นด้วยลูกน้ำ (สำหรับ MySQL SET)
+        // เช่น ['ZOOM', 'LINE'] -> 'ZOOM,LINE'
+        const platformsStr = Array.isArray(platforms) ? platforms.join(',') : platforms;
+
+        // 3. ตรวจสอบเงื่อนไขกุญแจ ตามแพลตฟอร์มที่เลือก
+        if (platformsStr.includes('ZOOM')) {
+            if (!zoom_account_id || !zoom_client_id || !zoom_client_secret) {
+                return res.status(400).json({ message: "คุณเลือกแพลตฟอร์ม ZOOM กรุณากรอกข้อมูล API Key ของ Zoom ให้ครบถ้วน" });
+            }
+        }
+        if (platformsStr.includes('LINE')) {
+            if (!line_oa_id) {
+                return res.status(400).json({ message: "คุณเลือกแพลตฟอร์ม LINE กรุณากรอก LINE OA ID" });
+            }
+        }
+        const [existname] = await connection.execute(`
+            SELECT id,device_name FROM devices WHERE device_name = ?
+            
+            
+            `,[device_name])
+        if (existname.length > 0 ){
+            throw new ValidationError('ชื่ออุปกรณ์นี้ได้ถูกใช้งานไปแล้ว')
+        }
+        // เซ็ตค่า default ให้ status ถ้าไม่ได้ส่งมา
+        const finalStatus = status || 'ACTIVE';
+
+        // 4. บันทึกลง Database
+        const [result] = await connection.execute(`
+            INSERT INTO devices (
+                device_name, device_type, prison_id, status, platforms,
+                zoom_account_id, zoom_client_id, zoom_client_secret, 
+                line_oa_id, line_oa_url
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+            device_name, 
+            device_type || null, 
+            '1', 
+            finalStatus,
+            platformsStr,
+            zoom_account_id || null, 
+            zoom_client_id || null, 
+            zoom_client_secret || null, 
+            line_oa_id || null, 
+            line_oa_url || null
+        ]);
+
+        res.status(201).json({ 
+            message: "เพิ่มอุปกรณ์สำเร็จ", 
+            deviceId: result.insertId 
+        });
+
+    } catch (error) {
+        console.error("Add Device Error:", error);
+        if (error instanceof ValidationError){
+            return res.status(error.statusCode).json({message: error.message})
+        }
+        return res.status(500).json({ message: "เกิดข้อผิดพลาดในการเพิ่มอุปกรณ์" });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+// PUT /admin/devices/:id (แก้ไขข้อมูลอุปกรณ์)
+app.put('/admin/devices/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+        const deviceId = req.params.id;
+        let { 
+            device_name, device_type, prison_id, platforms, status,
+            zoom_account_id, zoom_client_id, zoom_client_secret, 
+            line_oa_id, line_oa_url 
+        } = req.body;
+
+        // 1. เช็กว่ามีอุปกรณ์นี้อยู่จริงไหม
+        const [checkDevice] = await connection.execute(`SELECT id FROM devices WHERE id = ?`, [deviceId]);
+        if (checkDevice.length === 0) {
+            return res.status(404).json({ message: "ไม่พบข้อมูลอุปกรณ์ที่ต้องการแก้ไข" });
+        }
+
+        if (!device_name || !platforms || platforms.length === 0) {
+            return res.status(400).json({ message: "กรุณากรอกชื่ออุปกรณ์ และเลือกแพลตฟอร์มอย่างน้อย 1 อย่าง" });
+        }
+
+        const platformsStr = Array.isArray(platforms) ? platforms.join(',') : platforms;
+
+        // 2. ดัก Validation เหมือนตอน POST
+        if (platformsStr.includes('ZOOM') && (!zoom_account_id || !zoom_client_id || !zoom_client_secret)) {
+            return res.status(400).json({ message: "คุณเลือกแพลตฟอร์ม ZOOM กรุณากรอกข้อมูล API Key ของ Zoom ให้ครบถ้วน" });
+        }
+        if (platformsStr.includes('LINE') && !line_oa_id) {
+            return res.status(400).json({ message: "คุณเลือกแพลตฟอร์ม LINE กรุณากรอก LINE OA ID" });
+        }
+
+        // 3. อัปเดตข้อมูล
+        await connection.execute(`
+            UPDATE devices 
+            SET device_name = ?, device_type = ?, prison_id = ?, status = ?, platforms = ?,
+                zoom_account_id = ?, zoom_client_id = ?, zoom_client_secret = ?, 
+                line_oa_id = ?, line_oa_url = ?
+            WHERE id = ?
+        `, [
+            device_name, device_type || null, prison_id || null, status || 'ACTIVE', platformsStr,
+            zoom_account_id || null, zoom_client_id || null, zoom_client_secret || null, 
+            line_oa_id || null, line_oa_url || null, 
+            deviceId
+        ]);
+
+        res.status(200).json({ message: "แก้ไขข้อมูลอุปกรณ์สำเร็จ" });
+
+    } catch (error) {
+        console.error("Update Device Error:", error);
+        res.status(500).json({ message: "เกิดข้อผิดพลาดในการแก้ไขอุปกรณ์" });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+// DELETE /admin/devices/:id (ลบข้อมูลอุปกรณ์)
+app.delete('/admin/devices/:id', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+    const connection = await db.getConnection();
+    try {
+        const deviceId = req.params.id;
+
+        // 1. เช็กก่อนว่ามีอุปกรณ์นี้อยู่ในระบบจริงไหม
+        const [checkDevice] = await connection.execute(`SELECT id FROM devices WHERE id = ?`, [deviceId]);
+        
+        if (checkDevice.length === 0) {
+            return res.status(404).json({ message: "ไม่พบข้อมูลอุปกรณ์ที่ต้องการลบ" });
+        }
+
+        // 2. สั่งลบข้อมูลออกจากฐานข้อมูล
+        await connection.execute(`DELETE FROM devices WHERE id = ?`, [deviceId]);
+
+        return res.status(200).json({ message: "ลบข้อมูลอุปกรณ์สำเร็จเรียบร้อยแล้ว" });
+
+    } catch (error) {
+        console.error("Delete Device Error:", error);
+        
+        // 🌟 ทริคระดับ Pro: ดักจับ Error กรณีที่ตู้นี้ถูกนำไปใช้จองคิวแล้ว (ติด Foreign Key)
+        if (error.code === 'ER_ROW_IS_REFERENCED_2') {
+            return res.status(400).json({ 
+                message: "ไม่สามารถลบอุปกรณ์นี้ได้ เนื่องจากมีประวัติการจองคิวผูกอยู่ แนะนำให้เปลี่ยนสถานะเป็น 'ปิดปรับปรุง (MAINTENANCE)' แทนครับ" 
+            });
+        }
+
+        return res.status(500).json({ message: "เกิดข้อผิดพลาดในการลบอุปกรณ์" });
+    } finally {
+        if (connection) {
+            connection.release();
+        }
     }
 });
 
