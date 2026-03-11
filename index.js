@@ -1332,7 +1332,7 @@ app.post('/admin/visit-slots/generate-advanced', checkAPI_key, checkAdminAuth, c
 // ==========================================
 // 📅 API สำหรับ Admin ดึงรายการรอบการเยี่ยมทั้งหมด (รองรับการ Filter)
 // ==========================================
-app.get('/admin/visit-slots', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR']), async (req, res) => {
+app.get('/admin/visit-slots', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR','COMMANDER']), async (req, res) => {
     try {
         // 1. รับค่าตัวกรองจาก Query String (เช่น ?start_date=2026-03-09&status=OPEN)
         const { start_date, end_date, status, device_id } = req.query;
@@ -1454,7 +1454,7 @@ app.delete('/admin/visit-slots/:id', checkAPI_key, checkAdminAuth, checkRole(['S
 // ==========================================
 // 📋 API สำหรับ Admin ดึงรายชื่อการจองคิวเยี่ยมญาติ
 // ==========================================
-app.get('/admin/visit-bookings', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR','VISITATION']), async (req, res) => {
+app.get('/admin/visit-bookings', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'REGISTRAR','VISITATION','COMMANDER']), async (req, res) => {
     try {
         const { date, slot_id, status, booking_code, inmate_id } = req.query;
 
@@ -2218,7 +2218,7 @@ app.get('/api/dashboard/export', async (req, res) => {
     }
 });
 
-app.put('/admin/visit-bookings/:id/status', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'VISITATION']), async (req, res) => {
+app.put('/admin/visit-bookings/:id/status', checkAPI_key, checkAdminAuth, checkRole(['SUPER_ADMIN', 'VISITATION','COMMANDER']), async (req, res) => {
     try {
         const bookingId = req.params.id;
         const { status } = req.body; 
