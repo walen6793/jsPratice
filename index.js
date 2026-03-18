@@ -2945,13 +2945,13 @@ app.put(
 
       // 3. 🚨 กฎควบคุมการเปลี่ยนสถานะ (State Machine Validation)
       if (status === "COMPLETED") {
-        if (currentStatus !== "NO_SHOW") {
+        if (currentStatus !== "PENDING") {
           throw new ValidationError(
             `ไม่สามารถเช็คอินได้! สถานะปัจจุบันคือ '${currentStatus}' `,
             400,
           );
         } else if (status === "NO_SHOW") {
-          if (currentStatus !== "COMPLETED") {
+          if (currentStatus !== "PENDING") {
             throw new ValidationError(
               `ไม่สามารถเช็คอินได้! สถานะปัจจุบันคือ '${currentStatus}' `,
               400,
